@@ -1,0 +1,60 @@
+name: SPRT
+
+# Play this branch against another ref until an SPRT decides whether it is
+# stronger. Start it from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Ref to test against
+        default: master
+      elo0:
+        description: H0 Elo
+        default: "0"
+      elo1:
+        description: H1 Elo
+        default: "10"
+      games:
+        description: Maximum games
+        default: "4000"
+      turn_ms:
+        description: Milliseconds per move
+        default: "100"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so new lints or codegen changes arrive in deliberate updates.
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  sprt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: new
+      - uses: actions/checkout@v7
+        with:
+          path: base
+          ref: ${{ inputs.base }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build both versions
+        run: |
+          cargo build --release --manifest-path new/Cargo.toml -p tengen-piskvork -p tengen-arena
+          cargo build --release --manifest-path base/Cargo.toml -p tengen-piskvork
+      - name: Play
+        run: |
+          new/target/release/tengen-arena \
+            --new new/target/release/pbrain-tengen \
+            --base base/target/release/pbrain-tengen \
+            --games ${{ inputs.games }} \
+            --turn-ms ${{ inputs.turn_ms }} \
+            --sprt ${{ inputs.elo0 }},${{ inputs.elo1 }} \
+            --concurrency "$(nproc)" \
+            --seed "${{ github.run_id }}" | tee -a "$GITHUB_STEP_SUMMARY"

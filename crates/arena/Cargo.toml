@@ -1,0 +1,17 @@
+[package]
+name = "tengen-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tengen-engine = { path = "../engine" }
+
+[[bin]]
+name = "tengen-arena"
+path = "src/main.rs"
+
+[[bin]]
+name = "tengen-tune"
+path = "src/bin/tune.rs"

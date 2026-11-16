@@ -1,0 +1,344 @@
+//! Static evaluation.
+//!
+//! The evaluation is linear so it can be tuned by logistic regression on game
+//! results (Texel tuning):
+//!
+//! * every empty cell contributes a value per color, looked up by its pattern
+//!   code (the order-independent combination of its four line patterns);
+//! * a threat term, indexed by which kinds of forcing moves each side has,
+//!   captures what the side to move can do with its tempo.
+//!
+//! The tables live in `weights.txt`, written by `tengen-tune`. They start
+//! from a factored model, where a code's value is the sum of its four line
+//! patterns' weights plus a bonus for their combination; tuning refines each
+//! code on its own.
+//!
+//! Scores are from the side to move's point of view, in units where
+//! [`SCALE`] maps to a win probability of about 73%.
+
+use std::sync::OnceLock;
+
+use crate::board::{Board, Color, Pos};
+use crate::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
+
+/// Evaluation score. Mate scores live above [`crate::search::MATE_BOUND`].
+pub type Value = i32;
+
+/// Eval units per logistic unit: `win_probability = 1 / (1 + exp(-v / SCALE))`.
+pub const SCALE: f64 = 200.0;
+
+/// Number of threat-mask entries.
+pub const THREAT_COUNT: usize = 1 << 8;
+
+/// Bits of the threat mask: four kinds of forcing move for each side.
+mod bit {
+    pub const SELF_FLEX4: usize = 1 << 0;
+    pub const SELF_FOUR_THREE: usize = 1 << 1;
+    pub const SELF_FOUR: usize = 1 << 2;
+    pub const SELF_FLEX3: usize = 1 << 3;
+    pub const OPP_FLEX4: usize = 1 << 4;
+    pub const OPP_FOUR_THREE: usize = 1 << 5;
+    pub const OPP_FOUR: usize = 1 << 6;
+    pub const OPP_FLEX3: usize = 1 << 7;
+}
+
+/// The evaluation tables.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Weights {
+    /// Value of an empty cell for one color, by pattern code.
+    pub pcode: Vec<i32>,
+    /// Threat term, indexed by [`threat_mask`].
+    pub threat: Vec<i32>,
+}
+
+/// The factored model that seeds the tables: per line pattern and per
+/// combination, plus the threat term.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Factored {
+    pub pattern: [i32; Pattern::COUNT],
+    pub pattern4: [i32; Pattern4::COUNT],
+    pub threat: [i32; THREAT_COUNT],
+}
+
+/// Hand-set starting point of the factored model.
+pub const DEFAULT_FACTORED: Factored = Factored {
+    //        Dead B1 F1 B2 F2 F2A F2B B3 F3 F3S B4  F4   F5
+    pattern: [0, 1, 2, 3, 8, 10, 12, 10, 30, 36, 24, 100, 250],
+    //         None L  K  J   I  H   G   F  E   D    C    B    A
+    pattern4: [0, 0, 0, 8, 10, 0, 20, 80, 0, 25, 150, 300, 600],
+    threat: default_threats(),
+};
+
+/// Default bonus for the side to move.
+const TEMPO: i32 = 60;
+
+const fn default_threats() -> [i32; THREAT_COUNT] {
+    let mut out = [0; THREAT_COUNT];
+    let mut mask = 0;
+    while mask < THREAT_COUNT {
+        let opp_forcing = mask & (bit::OPP_FLEX4 | bit::OPP_FOUR_THREE | bit::OPP_FOUR) != 0;
+        let self_forcing = mask & (bit::SELF_FLEX4 | bit::SELF_FOUR_THREE | bit::SELF_FOUR) != 0;
+        // Having the move is worth about half a stone's potential.
+        let mut v = TEMPO;
+        if mask & bit::SELF_FLEX4 != 0 {
+            v += if opp_forcing { 300 } else { 1500 };
+        }
+        if mask & bit::SELF_FOUR_THREE != 0 {
+            v += if opp_forcing { 100 } else { 400 };
+        }
+        if mask & bit::SELF_FOUR != 0 {
+            v += 60;
+        }
+        if mask & bit::SELF_FLEX3 != 0 {
+            v += if opp_forcing { 40 } else { 150 };
+        }
+        if mask & bit::OPP_FLEX4 != 0 {
+            v -= if self_forcing { 200 } else { 600 };
+        }
+        if mask & bit::OPP_FOUR_THREE != 0 {
+            v -= 150;
+        }
+        if mask & bit::OPP_FOUR != 0 {
+            v -= 30;
+        }
+        if mask & bit::OPP_FLEX3 != 0 {
+            v -= 50;
+        }
+        out[mask] = v;
+        mask += 1;
+    }
+    out
+}
+
+impl Factored {
+    /// The tables this model implies.
+    pub fn weights(&self) -> Weights {
+        let tables = Tables::get();
+        let pcode = (0..PCODE_COUNT as PatternCode)
+            .map(|code| {
+                let lines: i32 = tables.patterns(code).iter().map(|&p| self.pattern[p as usize]).sum();
+                lines + self.pattern4[tables.pattern4(code) as usize]
+            })
+            .collect();
+        Weights {
+            pcode,
+            threat: self.threat.to_vec(),
+        }
+    }
+}
+
+impl Default for Weights {
+    fn default() -> Weights {
+        Weights::parse(include_str!("weights.txt")).expect("built-in weights.txt is valid")
+    }
+}
+
+impl Weights {
+    /// Parse the text form written by [`Weights`]'s `Display`: one line per
+    /// table, a name followed by whitespace-separated integers. Lines
+    /// starting with `#` are comments.
+    pub fn parse(text: &str) -> Result<Weights, String> {
+        let mut pcode = None;
+        let mut threat = None;
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let mut words = line.split_whitespace();
+            let name = words.next().unwrap_or_default();
+            let values: Vec<i32> = words
+                .map(|v| v.parse().map_err(|e| format!("{name}: {e}")))
+                .collect::<Result<_, _>>()?;
+            let (slot, len) = match name {
+                "pcode" => (&mut pcode, PCODE_COUNT),
+                "threat" => (&mut threat, THREAT_COUNT),
+                _ => return Err(format!("unknown table {name}")),
+            };
+            if values.len() != len {
+                return Err(format!("{name}: expected {len} values, got {}", values.len()));
+            }
+            *slot = Some(values);
+        }
+        Ok(Weights {
+            pcode: pcode.ok_or("missing pcode table")?,
+            threat: threat.ok_or("missing threat table")?,
+        })
+    }
+}
+
+impl std::fmt::Display for Weights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "# Tengen evaluation weights, written by tengen-tune.")?;
+        for (name, table) in [("pcode", &self.pcode), ("threat", &self.threat)] {
+            let values: Vec<String> = table.iter().map(i32::to_string).collect();
+            writeln!(f, "{name} {}", values.join(" "))?;
+        }
+        Ok(())
+    }
+}
+
+static ACTIVE: OnceLock<CellValues> = OnceLock::new();
+
+/// Use `weights` instead of the built-in ones for the rest of the process.
+///
+/// Must be called before the first board is created; fails afterwards.
+pub fn install(weights: &Weights) -> Result<(), String> {
+    ACTIVE
+        .set(CellValues::new(weights))
+        .map_err(|_| "evaluation weights are already in use".to_string())
+}
+
+/// The tables in the form the board and search use them.
+pub struct CellValues {
+    values: Box<[i32; PCODE_COUNT]>,
+    threat: Box<[i32; THREAT_COUNT]>,
+}
+
+impl CellValues {
+    /// Tables for the weights in use: the built-in ones unless [`install`]
+    /// chose others.
+    pub fn standard() -> &'static CellValues {
+        ACTIVE.get_or_init(|| CellValues::new(&Weights::default()))
+    }
+
+    /// Tables for arbitrary weights.
+    pub fn new(weights: &Weights) -> CellValues {
+        CellValues {
+            values: weights.pcode.clone().try_into().expect("pcode table size"),
+            threat: weights.threat.clone().try_into().expect("threat table size"),
+        }
+    }
+
+    /// Value of a cell with pattern code `code`.
+    #[inline]
+    pub fn value(&self, code: PatternCode) -> i32 {
+        self.values[code as usize]
+    }
+}
+
+/// Which kinds of forcing moves each side has, for the threat term.
+pub fn threat_mask(board: &Board, us: Color) -> usize {
+    let them = us.opponent();
+    let any = |c, kinds: &[Pattern4]| kinds.iter().any(|&k| board.p4_count(c, k) > 0);
+    let mut mask = 0;
+    for (color, shift) in [(us, 0), (them, 4)] {
+        let flags = [
+            any(color, &[Pattern4::BFlex4]),
+            any(color, &[Pattern4::CBlock4Flex3]),
+            any(color, &[Pattern4::DBlock4Plus, Pattern4::EBlock4]),
+            any(color, &[Pattern4::FFlex3x2, Pattern4::GFlex3Plus, Pattern4::HFlex3]),
+        ];
+        for (i, flag) in flags.into_iter().enumerate() {
+            mask |= (flag as usize) << (i + shift);
+        }
+    }
+    mask
+}
+
+/// Static evaluation from the side to move's point of view.
+#[inline]
+pub fn evaluate(board: &Board) -> Value {
+    let us = board.side_to_move();
+    let values = CellValues::standard();
+    board.pattern_value(us) - board.pattern_value(us.opponent()) + values.threat[threat_mask(board, us)]
+}
+
+/// Win probability of the side to move for an evaluation.
+pub fn win_probability(value: Value) -> f64 {
+    1.0 / (1.0 + (-(value as f64) / SCALE).exp())
+}
+
+/// Linear features of a position, for tuning: `evaluate` equals the dot
+/// product of these with the weights.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Features {
+    /// Own minus opponent count of empty cells per pattern code, nonzero
+    /// entries only.
+    pub pcode: Vec<(PatternCode, i32)>,
+    /// Active threat-mask entry.
+    pub threat: usize,
+}
+
+impl Features {
+    /// Extract the features of `board` for the side to move.
+    pub fn of(board: &Board) -> Features {
+        let us = board.side_to_move();
+        let mut counts = vec![0i32; PCODE_COUNT];
+        let n = board.size();
+        for pos in (0..n * n)
+            .map(|i| Pos::new(i % n, i / n))
+            .filter(|&p| board.is_empty(p))
+        {
+            counts[board.pcode(pos, us) as usize] += 1;
+            counts[board.pcode(pos, us.opponent()) as usize] -= 1;
+        }
+        let pcode = counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n != 0)
+            .map(|(code, &n)| (code as PatternCode, n))
+            .collect();
+        Features {
+            pcode,
+            threat: threat_mask(board, us),
+        }
+    }
+
+    /// Dot product with `weights`, i.e. the evaluation those weights give.
+    pub fn dot(&self, weights: &Weights) -> i32 {
+        let cells: i32 = self
+            .pcode
+            .iter()
+            .map(|&(code, n)| n * weights.pcode[code as usize])
+            .sum();
+        cells + weights.threat[self.threat]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn features_reproduce_the_evaluation() {
+        let weights = Weights::default();
+        let mut board = Board::new(15);
+        for (x, y) in [(7, 7), (8, 8), (7, 8), (6, 6), (8, 6), (9, 9), (6, 8), (0, 1)] {
+            board.play(Pos::new(x, y));
+            assert_eq!(Features::of(&board).dot(&weights), evaluate(&board));
+        }
+    }
+
+    #[test]
+    fn open_three_favors_its_owner() {
+        let mut board = Board::new(15);
+        for (x, y) in [(7, 7), (0, 14), (8, 7), (14, 14), (9, 7)] {
+            board.play(Pos::new(x, y));
+        }
+        // White to move against Black's open three.
+        assert!(evaluate(&board) < -150, "{}", evaluate(&board));
+        assert_eq!(win_probability(0), 0.5);
+    }
+
+    #[test]
+    fn weights_round_trip_through_text() {
+        let weights = DEFAULT_FACTORED.weights();
+        assert_eq!(Weights::parse(&weights.to_string()).unwrap(), weights);
+        assert!(Weights::parse("pcode 1 2").is_err());
+        assert!(Weights::parse("bogus 1").is_err());
+        assert!(Weights::parse("threat 1").is_err());
+    }
+
+    #[test]
+    fn threat_mask_sees_each_side() {
+        let mut board = Board::new(15);
+        for (x, y) in [(7, 7), (0, 14), (8, 7), (14, 14), (9, 7)] {
+            board.play(Pos::new(x, y));
+        }
+        // White to move; Black (the opponent) has open-four points.
+        assert_ne!(threat_mask(&board, Color::White) & bit::OPP_FLEX4, 0);
+        assert_eq!(threat_mask(&board, Color::White) & bit::SELF_FLEX4, 0);
+        assert_ne!(threat_mask(&board, Color::Black) & bit::SELF_FLEX4, 0);
+    }
+}
