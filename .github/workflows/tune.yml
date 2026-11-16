@@ -14,9 +14,13 @@ on:
       nodes:
         description: Nodes per move
         default: "20000"
+      reuse_run:
+        description: Fit the games of this earlier Tune run instead of playing new ones (run id)
+        default: ""
 
 permissions:
   contents: read
+  actions: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,6 +45,7 @@ jobs:
 
   selfplay:
     needs: build
+    if: inputs.reuse_run == ''
     strategy:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
@@ -61,7 +66,8 @@ jobs:
           path: games-${{ matrix.shard }}.txt
 
   fit:
-    needs: selfplay
+    needs: [build, selfplay]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
@@ -70,6 +76,15 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Download the earlier run's games
+        if: inputs.reuse_run != ''
+        uses: actions/download-artifact@v8
+        with:
+          pattern: games-*
+          path: artifacts
+          merge-multiple: true
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
       - name: Fit
         run: |
           chmod +x artifacts/pbrain-tengen artifacts/tengen-arena artifacts/tengen-tune
