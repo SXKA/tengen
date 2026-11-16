@@ -98,7 +98,7 @@ impl TranspositionTable {
 
     /// Size in megabytes.
     pub fn megabytes(&self) -> usize {
-        self.buckets.len() * std::mem::size_of::<Bucket>() >> 20
+        (self.buckets.len() * std::mem::size_of::<Bucket>()) >> 20
     }
 
     /// Forget everything.
@@ -163,7 +163,11 @@ impl TranspositionTable {
                 break;
             }
             let age = (generation.wrapping_sub(generation_of(data)) & 0x1f) as i32;
-            let worth = if check == 0 && data == 0 { i32::MIN } else { TtEntry::unpack(data).depth - 4 * age };
+            let worth = if check == 0 && data == 0 {
+                i32::MIN
+            } else {
+                TtEntry::unpack(data).depth - 4 * age
+            };
             if worth < victim_worth {
                 victim_worth = worth;
                 victim = slot;
@@ -208,7 +212,10 @@ mod tests {
         tt.store(0xdead_beef_0000_1234, entry);
         assert_eq!(tt.probe(0xdead_beef_0000_1234), Some(entry));
         assert_eq!(tt.probe(0xdead_beef_0000_1236), None);
-        let empty = TtEntry { best_move: None, ..entry };
+        let empty = TtEntry {
+            best_move: None,
+            ..entry
+        };
         tt.store(42, empty);
         assert_eq!(tt.probe(42).unwrap().best_move, None);
         tt.clear();
@@ -218,11 +225,33 @@ mod tests {
     #[test]
     fn keeps_moves_and_deeper_results() {
         let tt = TranspositionTable::new(1);
-        let deep = TtEntry { best_move: Some(Pos::new(1, 1)), value: 5, eval: 0, depth: 12, bound: Bound::Lower, is_pv: false };
+        let deep = TtEntry {
+            best_move: Some(Pos::new(1, 1)),
+            value: 5,
+            eval: 0,
+            depth: 12,
+            bound: Bound::Lower,
+            is_pv: false,
+        };
         tt.store(7, deep);
-        tt.store(7, TtEntry { depth: 2, best_move: None, ..deep });
+        tt.store(
+            7,
+            TtEntry {
+                depth: 2,
+                best_move: None,
+                ..deep
+            },
+        );
         assert_eq!(tt.probe(7), Some(deep));
-        tt.store(7, TtEntry { depth: 2, best_move: None, bound: Bound::Exact, ..deep });
+        tt.store(
+            7,
+            TtEntry {
+                depth: 2,
+                best_move: None,
+                bound: Bound::Exact,
+                ..deep
+            },
+        );
         let got = tt.probe(7).unwrap();
         assert_eq!((got.depth, got.best_move), (2, Some(Pos::new(1, 1))));
     }

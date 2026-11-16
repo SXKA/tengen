@@ -84,11 +84,17 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     }
 
     for pos in board.candidates() {
-        moves.push(ScoredMove { pos, score: move_score(board, pos, us, values) });
+        moves.push(ScoredMove {
+            pos,
+            score: move_score(board, pos, us, values),
+        });
     }
     if moves.is_empty() && !board.is_full() {
         // No stone yet: start in the center.
-        moves.push(ScoredMove { pos: board.center(), score: 0 });
+        moves.push(ScoredMove {
+            pos: board.center(),
+            score: 0,
+        });
     }
     Gen::Moves { forced: false }
 }
@@ -190,7 +196,10 @@ mod tests {
     #[test]
     fn empty_board_plays_center() {
         let mut board = Board::new(15);
-        assert_eq!(generated(&mut board), (Gen::Moves { forced: false }, vec![Pos::new(7, 7)]));
+        assert_eq!(
+            generated(&mut board),
+            (Gen::Moves { forced: false }, vec![Pos::new(7, 7)])
+        );
     }
 
     #[test]
@@ -201,14 +210,20 @@ mod tests {
         // With an extra White stone far away, Black is to move and wins.
         board.play(Pos::new(13, 13));
         let (kind, _) = generated(&mut board);
-        assert!(matches!(kind, Gen::Win(p) if p == Pos::new(2, 7) || p == Pos::new(7, 7)), "{kind:?}");
+        assert!(
+            matches!(kind, Gen::Win(p) if p == Pos::new(2, 7) || p == Pos::new(7, 7)),
+            "{kind:?}"
+        );
     }
 
     #[test]
     fn blocks_a_single_five_point() {
         // White's (3..=6, 0) is blocked on the left by Black's (2, 0).
         let mut board = board_with(&[(2, 0), (3, 0), (7, 7), (4, 0), (9, 9), (5, 0), (11, 11), (6, 0)]);
-        assert_eq!(generated(&mut board), (Gen::Moves { forced: true }, vec![Pos::new(7, 0)]));
+        assert_eq!(
+            generated(&mut board),
+            (Gen::Moves { forced: true }, vec![Pos::new(7, 0)])
+        );
     }
 
     #[test]
@@ -233,8 +248,18 @@ mod tests {
     #[test]
     fn two_open_threes_are_lost() {
         let mut board = board_with(&[
-            (0, 14), (6, 5), (14, 14), (7, 5), (14, 0), (8, 5),
-            (0, 0), (6, 9), (7, 14), (7, 9), (7, 0), (8, 9),
+            (0, 14),
+            (6, 5),
+            (14, 14),
+            (7, 5),
+            (14, 0),
+            (8, 5),
+            (0, 0),
+            (6, 9),
+            (7, 14),
+            (7, 9),
+            (7, 0),
+            (8, 9),
         ]);
         assert_eq!(generated(&mut board).0, Gen::Lost(4));
     }

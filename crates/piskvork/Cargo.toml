@@ -1,9 +1,14 @@
 [package]
 name = "tengen-piskvork"
+description = "Tengen behind the Piskvork (Gomocup) protocol."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[[bin]]
+name = "pbrain-tengen"
+path = "src/main.rs"
 
 [dependencies]
 tengen-engine = { path = "../engine" }

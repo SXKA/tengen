@@ -99,12 +99,19 @@ pub struct Limits {
 impl Limits {
     /// Search to a fixed depth.
     pub fn depth(depth: i32) -> Limits {
-        Limits { depth: Some(depth), ..Limits::default() }
+        Limits {
+            depth: Some(depth),
+            ..Limits::default()
+        }
     }
 
     /// Use about `ms` milliseconds, never more.
     pub fn movetime(ms: f64) -> Limits {
-        Limits { soft_ms: Some(ms * 0.5), hard_ms: Some(ms), ..Limits::default() }
+        Limits {
+            soft_ms: Some(ms * 0.5),
+            hard_ms: Some(ms),
+            ..Limits::default()
+        }
     }
 
     /// Budget a move from a game clock: `time_left_ms` for the rest of the
@@ -119,7 +126,11 @@ impl Limits {
         }
         // Leave room for process and protocol overhead.
         let hard = (hard - 30.0).max(hard * 0.5).max(1.0);
-        Limits { soft_ms: Some(hard * 0.4), hard_ms: Some(hard), ..Limits::default() }
+        Limits {
+            soft_ms: Some(hard * 0.4),
+            hard_ms: Some(hard),
+            ..Limits::default()
+        }
     }
 }
 
@@ -257,7 +268,10 @@ impl Engine {
         #[cfg(not(feature = "threads"))]
         let result = Worker::new(&shared, 0, board.clone()).think(&mut on_info);
 
-        SearchResult { nodes: shared.nodes.load(Relaxed), ..result }
+        SearchResult {
+            nodes: shared.nodes.load(Relaxed),
+            ..result
+        }
     }
 }
 
@@ -371,7 +385,13 @@ impl<'a> Worker<'a> {
         let mut list = Vec::new();
         let forced_loss = match movegen::generate(&mut self.board, &mut list) {
             Gen::Win(pos) => {
-                return SearchResult { best_move: Some(pos), value: mate_in(1), depth: 1, nodes: 1, pv: vec![pos] };
+                return SearchResult {
+                    best_move: Some(pos),
+                    value: mate_in(1),
+                    depth: 1,
+                    nodes: 1,
+                    pv: vec![pos],
+                };
             }
             Gen::Lost(plies) => {
                 // Every move loses; pick the most stubborn-looking one.
@@ -380,21 +400,43 @@ impl<'a> Worker<'a> {
                 list = self
                     .board
                     .candidates()
-                    .map(|pos| ScoredMove { pos, score: movegen::move_score(&self.board, pos, us, values) })
+                    .map(|pos| ScoredMove {
+                        pos,
+                        score: movegen::move_score(&self.board, pos, us, values),
+                    })
                     .collect();
                 Some(plies)
             }
             Gen::Moves { .. } => None,
         };
         if list.is_empty() {
-            return SearchResult { best_move: None, value: 0, depth: 0, nodes: 0, pv: Vec::new() };
+            return SearchResult {
+                best_move: None,
+                value: 0,
+                depth: 0,
+                nodes: 0,
+                pv: Vec::new(),
+            };
         }
         list.sort_by_key(|m| std::cmp::Reverse(m.score));
         if let Some(plies) = forced_loss {
             let pos = list[0].pos;
-            return SearchResult { best_move: Some(pos), value: mated_in(plies as usize), depth: 1, nodes: 1, pv: vec![pos] };
+            return SearchResult {
+                best_move: Some(pos),
+                value: mated_in(plies as usize),
+                depth: 1,
+                nodes: 1,
+                pv: vec![pos],
+            };
         }
-        self.root_moves = list.iter().map(|m| RootMove { pos: m.pos, value: -INFINITE, pv: vec![m.pos] }).collect();
+        self.root_moves = list
+            .iter()
+            .map(|m| RootMove {
+                pos: m.pos,
+                value: -INFINITE,
+                pv: vec![m.pos],
+            })
+            .collect();
 
         let limits = self.shared.limits.clone();
         let max_depth = limits.depth.unwrap_or(MAX_DEPTH).clamp(1, MAX_DEPTH);
@@ -404,7 +446,11 @@ impl<'a> Worker<'a> {
 
         for depth in 1..=max_depth {
             // Helpers skip ahead on odd ids so threads spread over depths.
-            let search_depth = if self.is_main() { depth } else { depth + (self.id as i32 & 1) };
+            let search_depth = if self.is_main() {
+                depth
+            } else {
+                depth + (self.id as i32 & 1)
+            };
             self.root_depth = search_depth;
             self.seldepth = 0;
 
@@ -437,7 +483,10 @@ impl<'a> Worker<'a> {
             if self.stopped() {
                 // A partial iteration only counts if its first move, the
                 // previous best, was searched and something beat it.
-                if self.root_moves[0].value > -INFINITE && self.root_moves[0].pos != best.pos && self.root_moves[0].value > value {
+                if self.root_moves[0].value > -INFINITE
+                    && self.root_moves[0].pos != best.pos
+                    && self.root_moves[0].value > value
+                {
                     best = self.root_moves[0].clone();
                     value = best.value;
                 }
@@ -471,7 +520,13 @@ impl<'a> Worker<'a> {
             self.shared.stop.store(true, Relaxed);
         }
         self.poll();
-        SearchResult { best_move: Some(best.pos), value, depth: completed, nodes: self.nodes, pv: best.pv }
+        SearchResult {
+            best_move: Some(best.pos),
+            value,
+            depth: completed,
+            nodes: self.nodes,
+            pv: best.pv,
+        }
     }
 
     fn search_root(&mut self, mut alpha: Value, beta: Value, depth: i32) -> Value {
@@ -536,13 +591,20 @@ impl<'a> Worker<'a> {
         *h += bonus - *h * bonus.abs() / HISTORY_MAX;
     }
 
-    fn search<const PV: bool>(&mut self, mut alpha: Value, mut beta: Value, depth: i32, ply: usize, cut_node: bool) -> Value {
+    fn search<const PV: bool>(
+        &mut self,
+        mut alpha: Value,
+        mut beta: Value,
+        depth: i32,
+        ply: usize,
+        cut_node: bool,
+    ) -> Value {
         self.pv[ply].clear();
         if PV {
             self.seldepth = self.seldepth.max(ply);
         }
         self.nodes += 1;
-        if self.nodes % NODE_CHECK == 0 {
+        if self.nodes.is_multiple_of(NODE_CHECK) {
             self.poll();
         }
         if self.stopped() {
@@ -624,7 +686,11 @@ impl<'a> Worker<'a> {
         }
 
         // Internal iterative reduction: no move to try first, search less.
-        let depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() { depth - 1 } else { depth };
+        let depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() {
+            depth - 1
+        } else {
+            depth
+        };
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         let kind = movegen::generate(&mut self.board, &mut list);
@@ -663,9 +729,8 @@ impl<'a> Worker<'a> {
         for (index, m) in list.iter().enumerate() {
             let move_count = index as i32 + 1;
             let pos = m.pos;
-            let tactical = forced
-                || self.board.p4(pos, us) >= Pattern4::HFlex3
-                || self.board.p4(pos, them) >= Pattern4::HFlex3;
+            let tactical =
+                forced || self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, them) >= Pattern4::HFlex3;
 
             if !PV && !in_threat && !tactical && best > -MATE_BOUND && move_count > 1 {
                 // Late move pruning.
@@ -767,7 +832,7 @@ impl<'a> Worker<'a> {
     /// if there is one; otherwise it may stand pat or play a four of its own.
     fn qsearch(&mut self, mut alpha: Value, beta: Value, ply: usize, qply: usize) -> Value {
         self.nodes += 1;
-        if self.nodes % NODE_CHECK == 0 {
+        if self.nodes.is_multiple_of(NODE_CHECK) {
             self.poll();
         }
         if self.stopped() {
@@ -867,7 +932,14 @@ impl<'a> Worker<'a> {
         };
         self.shared.tt.store(
             key,
-            TtEntry { best_move, value: value_to_tt(best, ply), eval: stand, depth: 0, bound, is_pv: false },
+            TtEntry {
+                best_move,
+                value: value_to_tt(best, ply),
+                eval: stand,
+                depth: 0,
+                bound,
+                is_pv: false,
+            },
         );
         best
     }
@@ -925,7 +997,16 @@ mod tests {
         // Black to move: (8, 7) makes the open three on row 7 a four and the
         // column (8, 5), (8, 6) an open three, a winning four-three.
         let board = board_with(&[
-            (5, 7), (0, 0), (6, 7), (0, 2), (7, 7), (0, 14), (8, 5), (14, 0), (8, 6), (14, 14),
+            (5, 7),
+            (0, 0),
+            (6, 7),
+            (0, 2),
+            (7, 7),
+            (0, 14),
+            (8, 5),
+            (14, 0),
+            (8, 6),
+            (14, 14),
         ]);
         // Many moves win here (Black even has an open three); the search
         // must prove a win quickly.
@@ -939,8 +1020,22 @@ mod tests {
         // Black fours at (8, 7) (White blocks at (9, 7)), then (8, 8) makes a
         // double four. A depth-1 search must see it through the threat search.
         let board = board_with(&[
-            (5, 7), (4, 7), (6, 7), (4, 8), (7, 7), (8, 11), (5, 8), (0, 0),
-            (6, 8), (14, 0), (7, 8), (0, 14), (8, 9), (14, 14), (8, 10), (14, 7),
+            (5, 7),
+            (4, 7),
+            (6, 7),
+            (4, 8),
+            (7, 7),
+            (8, 11),
+            (5, 8),
+            (0, 0),
+            (6, 8),
+            (14, 0),
+            (7, 8),
+            (0, 14),
+            (8, 9),
+            (14, 14),
+            (8, 10),
+            (14, 7),
         ]);
         let result = best(&board, 1);
         assert!(result.value >= MATE_BOUND, "{result:?}\n{board}");
@@ -959,7 +1054,16 @@ mod tests {
     #[test]
     fn lazy_smp_finds_the_same_win() {
         let board = board_with(&[
-            (5, 7), (0, 0), (6, 7), (0, 2), (7, 7), (0, 14), (8, 5), (14, 0), (8, 6), (14, 14),
+            (5, 7),
+            (0, 0),
+            (6, 7),
+            (0, 2),
+            (7, 7),
+            (0, 14),
+            (8, 5),
+            (14, 0),
+            (8, 6),
+            (14, 14),
         ]);
         let mut engine = Engine::new(16);
         engine.set_threads(2);

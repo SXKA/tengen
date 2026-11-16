@@ -8,7 +8,7 @@
 //! side along the 4 lines through it.
 
 use crate::eval;
-use crate::pattern::{Pattern, Pattern4, PatternCode, Tables, HALF_WINDOW};
+use crate::pattern::{HALF_WINDOW, Pattern, Pattern4, PatternCode, Tables};
 
 /// Largest supported board side.
 pub const MAX_SIZE: usize = 20;
@@ -107,11 +107,12 @@ pub struct Area {
 
 impl Area {
     fn empty() -> Area {
-        Area { x0: u8::MAX, y0: u8::MAX, x1: 0, y1: 0 }
-    }
-
-    fn is_empty(self) -> bool {
-        self.x0 > self.x1
+        Area {
+            x0: u8::MAX,
+            y0: u8::MAX,
+            x1: 0,
+            y1: 0,
+        }
     }
 }
 
@@ -187,7 +188,10 @@ fn zobrist() -> &'static Zobrist {
             z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
             z ^ (z >> 31)
         };
-        let mut keys = Box::new(Zobrist { stone: [[0; CELLS]; 2], side: 0 });
+        let mut keys = Box::new(Zobrist {
+            stone: [[0; CELLS]; 2],
+            side: 0,
+        });
         for color in 0..2 {
             for key in keys.stone[color].iter_mut() {
                 *key = next();
@@ -267,7 +271,11 @@ impl Board {
     /// The player to move. Black moves first.
     #[inline]
     pub fn side_to_move(&self) -> Color {
-        if self.history.len() % 2 == 0 { Color::Black } else { Color::White }
+        if self.history.len().is_multiple_of(2) {
+            Color::Black
+        } else {
+            Color::White
+        }
     }
 
     /// Zobrist hash of the position, including the side to move.
@@ -354,7 +362,10 @@ impl Board {
 
     /// Number of empty cells where `color` would form at least `p4`.
     pub fn p4_count_at_least(&self, color: Color, p4: Pattern4) -> u32 {
-        self.p4_count[color.index()][p4 as usize..].iter().map(|&n| n as u32).sum()
+        self.p4_count[color.index()][p4 as usize..]
+            .iter()
+            .map(|&n| n as u32)
+            .sum()
     }
 
     /// Sum of empty-cell values for `color` (see [`eval::CellValues`]).
@@ -373,7 +384,8 @@ impl Board {
     /// been played.
     pub fn area_cells(&self) -> impl Iterator<Item = Pos> + use<> {
         let a = self.area;
-        let (xs, ys) = if a.is_empty() { (1..=0, 1..=0) } else { (a.x0..=a.x1, a.y0..=a.y1) };
+        // An empty area has x0 > x1 and y0 > y1, so both ranges are empty.
+        let (xs, ys) = (a.x0..=a.x1, a.y0..=a.y1);
         ys.flat_map(move |y| xs.clone().map(move |x| Pos::new(x as usize, y as usize)))
     }
 
@@ -401,7 +413,8 @@ impl Board {
         if self.p4_count(color, Pattern4::AFive) == 0 {
             return None;
         }
-        self.area_cells().find(|&p| self.is_empty(p) && self.p4(p, color) == Pattern4::AFive)
+        self.area_cells()
+            .find(|&p| self.is_empty(p) && self.p4(p, color) == Pattern4::AFive)
     }
 
     /// The board center, the usual first move.
@@ -433,7 +446,10 @@ impl Board {
     /// Pass the turn without playing, for null-move style probes. Undo with
     /// [`Board::undo_pass`].
     pub fn pass(&mut self) {
-        self.history.push(Undo { pos: Pos::NONE, area: self.area });
+        self.history.push(Undo {
+            pos: Pos::NONE,
+            area: self.area,
+        });
         self.hash ^= zobrist().side;
     }
 
@@ -474,16 +490,14 @@ impl Board {
     /// Recompute the patterns of an empty `pos` from the line masks.
     #[inline]
     fn compute_patterns(&self, pos: Pos, tables: &Tables) -> [[Pattern; 4]; 2] {
-        let mut out = [[Pattern::Dead; 4]; 2];
-        for dir in 0..4 {
+        let pairs = [0, 1, 2, 3].map(|dir| {
             let (line, at) = self.line_of(pos, dir);
             let black = self.lines[0][dir][line] >> at;
             let white = self.lines[1][dir][line] >> at;
             let edge = self.edges[dir][line] >> at;
-            out[0][dir] = tables.line(black, white | edge);
-            out[1][dir] = tables.line(white, black | edge);
-        }
-        out
+            (tables.line(black, white | edge), tables.line(white, black | edge))
+        });
+        [pairs.map(|p| p.0), pairs.map(|p| p.1)]
     }
 
     /// Remove an empty cell's contribution to the running totals.
@@ -516,10 +530,8 @@ impl Board {
         let patterns = self.compute_patterns(pos, tables);
         let cell = &mut self.cells[pos.index()];
         cell.pattern = patterns;
-        for c in 0..2 {
-            cell.pcode[c] = tables.pcode(patterns[c]);
-            cell.p4[c] = tables.pattern4(cell.pcode[c]);
-        }
+        cell.pcode = patterns.map(|p| tables.pcode(p));
+        cell.p4 = cell.pcode.map(|code| tables.pattern4(code));
     }
 
     /// Recompute the running totals from scratch.
@@ -557,11 +569,11 @@ impl Board {
         self.refresh_cell(pos, tables);
         self.attach(pos, values);
 
-        for dir in 0..4 {
+        for delta in DELTA {
             for side in [-1isize, 1] {
                 let mut q = pos.index() as isize;
                 for _ in 0..HALF_WINDOW {
-                    q += side * DELTA[dir];
+                    q += side * delta;
                     let Some(next) = self.on_board(q) else { break };
                     if self.cells[next.index()].stone != 0 {
                         continue;

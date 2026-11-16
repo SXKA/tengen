@@ -1,0 +1,49 @@
+name: Tune
+
+# Self-play games, fit the evaluation weights to their results, and check the
+# fitted weights against the current ones with an SPRT. Start it from the
+# Actions tab; the weights and games are attached to the run.
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Self-play games
+        default: "20000"
+      nodes:
+        description: Nodes per move
+        default: "20000"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p tengen-piskvork -p tengen-arena
+      - name: Self-play
+        run: target/release/tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} --seed "${{ github.run_id }}" --out games.txt
+      - name: Fit
+        run: |
+          target/release/tengen-tune fit --data games.txt --out weights.txt | tee fitted.rs
+          { echo '### Fitted weights'; echo '```rust'; cat fitted.rs; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check against the current weights
+        run: |
+          target/release/tengen-arena \
+            --new "target/release/pbrain-tengen --weights weights.txt" \
+            --base target/release/pbrain-tengen \
+            --games 2000 --turn-ms 100 --sprt 0,10 \
+            --concurrency "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tuning
+          path: |
+            weights.txt
+            fitted.rs
+            games.txt

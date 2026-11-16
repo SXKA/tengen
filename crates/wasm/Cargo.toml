@@ -1,0 +1,13 @@
+[package]
+name = "tengen-wasm"
+description = "Tengen compiled to WebAssembly for the browser, with a plain C ABI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tengen-engine = { path = "../engine", default-features = false }

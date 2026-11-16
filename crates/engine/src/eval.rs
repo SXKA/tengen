@@ -15,7 +15,7 @@
 use std::sync::OnceLock;
 
 use crate::board::{Board, Color, Pos};
-use crate::pattern::{Pattern, Pattern4, PatternCode, Tables, PCODE_COUNT};
+use crate::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 
 /// Evaluation score. Mate scores live above [`crate::search::MATE_BOUND`].
 pub type Value = i32;
@@ -41,6 +41,61 @@ impl Default for Weights {
     fn default() -> Weights {
         DEFAULT_WEIGHTS.clone()
     }
+}
+
+impl Weights {
+    /// Parse the text form written by [`Weights`]'s `Display`: one line per
+    /// table, a name followed by whitespace-separated integers.
+    pub fn parse(text: &str) -> Result<Weights, String> {
+        let mut w = Weights::default();
+        for line in text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let mut words = line.split_whitespace();
+            let name = words.next().unwrap_or_default();
+            let values: Vec<i32> = words
+                .map(|v| v.parse().map_err(|e| format!("{name}: {e}")))
+                .collect::<Result<_, _>>()?;
+            let table: &mut [i32] = match name {
+                "pattern" => &mut w.pattern,
+                "pattern4" => &mut w.pattern4,
+                "threat" => &mut w.threat,
+                _ => return Err(format!("unknown table {name}")),
+            };
+            if values.len() != table.len() {
+                return Err(format!("{name}: expected {} values, got {}", table.len(), values.len()));
+            }
+            table.copy_from_slice(&values);
+        }
+        Ok(w)
+    }
+}
+
+impl std::fmt::Display for Weights {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (name, table) in [
+            ("pattern", &self.pattern[..]),
+            ("pattern4", &self.pattern4[..]),
+            ("threat", &self.threat[..]),
+        ] {
+            let values: Vec<String> = table.iter().map(i32::to_string).collect();
+            writeln!(f, "{name} {}", values.join(" "))?;
+        }
+        Ok(())
+    }
+}
+
+static ACTIVE: OnceLock<CellValues> = OnceLock::new();
+
+/// Use `weights` instead of the built-in ones for the rest of the process.
+///
+/// Must be called before the first board is created; fails afterwards.
+pub fn install(weights: &Weights) -> Result<(), String> {
+    ACTIVE
+        .set(CellValues::new(weights))
+        .map_err(|_| "evaluation weights are already in use".to_string())
 }
 
 /// Hand-set starting point, refined by `tengen-tune`.
@@ -104,10 +159,10 @@ pub struct CellValues {
 }
 
 impl CellValues {
-    /// Tables for the default weights.
+    /// Tables for the weights in use: the built-in ones unless [`install`]
+    /// chose others.
     pub fn standard() -> &'static CellValues {
-        static VALUES: OnceLock<CellValues> = OnceLock::new();
-        VALUES.get_or_init(|| CellValues::new(&DEFAULT_WEIGHTS))
+        ACTIVE.get_or_init(|| CellValues::new(&DEFAULT_WEIGHTS))
     }
 
     /// Tables for arbitrary weights.
@@ -119,7 +174,10 @@ impl CellValues {
                 lines + weights.pattern4[tables.pattern4(code) as usize]
             })
             .collect();
-        CellValues { values, threat: weights.threat }
+        CellValues {
+            values,
+            threat: weights.threat,
+        }
     }
 
     /// Value of a cell with pattern code `code`.
@@ -190,9 +248,15 @@ impl Features {
     /// Extract the features of `board` for the side to move.
     pub fn of(board: &Board) -> Features {
         let us = board.side_to_move();
-        let mut f = Features { threat: threat_mask(board, us), ..Features::default() };
+        let mut f = Features {
+            threat: threat_mask(board, us),
+            ..Features::default()
+        };
         let n = board.size();
-        for pos in (0..n * n).map(|i| Pos::new(i % n, i / n)).filter(|&p| board.is_empty(p)) {
+        for pos in (0..n * n)
+            .map(|i| Pos::new(i % n, i / n))
+            .filter(|&p| board.is_empty(p))
+        {
             for (color, sign) in [(us, 1), (us.opponent(), -1)] {
                 for dir in 0..4 {
                     f.pattern[board.pattern(pos, color, dir) as usize] += sign;
@@ -233,5 +297,13 @@ mod tests {
         // White to move against Black's open three.
         assert!(evaluate(&board) < -150, "{}", evaluate(&board));
         assert_eq!(win_probability(0), 0.5);
+    }
+
+    #[test]
+    fn weights_round_trip_through_text() {
+        let text = DEFAULT_WEIGHTS.to_string();
+        assert_eq!(Weights::parse(&text).unwrap(), DEFAULT_WEIGHTS);
+        assert!(Weights::parse("pattern 1 2").is_err());
+        assert!(Weights::parse("bogus 1").is_err());
     }
 }

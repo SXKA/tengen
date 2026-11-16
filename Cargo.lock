@@ -19,3 +19,10 @@ version = "0.1.0"
 dependencies = [
  "tengen-engine",
 ]
+
+[[package]]
+name = "tengen-wasm"
+version = "0.1.0"
+dependencies = [
+ "tengen-engine",
+]

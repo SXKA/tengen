@@ -259,7 +259,12 @@ impl Tables {
             })
             .collect();
         let pattern4 = patterns.iter().map(|&p| Pattern4::from_patterns(p)).collect();
-        Tables { line, pcode, pattern4, patterns }
+        Tables {
+            line,
+            pcode,
+            pattern4,
+            patterns,
+        }
     }
 }
 
@@ -277,8 +282,7 @@ fn classify_placed(own: u32, blocked: u32, placed: impl Fn(u32) -> Pattern) -> P
     if has_five_through_center(own) {
         return Pattern::F5;
     }
-    let (mut wins, mut flex4, mut block4, mut flex3, mut block3, mut flex2, mut block2) =
-        (0, 0, 0, 0, 0, 0, 0);
+    let (mut wins, mut flex4, mut block4, mut flex3, mut block3, mut flex2, mut block2) = (0, 0, 0, 0, 0, 0, 0);
     let mut cells = WINDOW_MASK & !own & !blocked;
     while cells != 0 {
         let bit = cells & cells.wrapping_neg();
