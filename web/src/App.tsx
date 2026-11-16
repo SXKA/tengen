@@ -128,16 +128,41 @@ export function App() {
     client.newGame(size, rule).then(setSnapshot, () => {});
   }, []);
 
+  /** Sets up `moves` again in a new worker, after the old one stopped answering. */
+  const resumeGame = useCallback(async (size: number, rule: RuleId, moves: Packed[]) => {
+    const client = engine.current;
+    if (!client) return;
+    const game = ++generation.current;
+    setPhase("loading");
+    try {
+      let next = await client.newGame(size, rule);
+      for (const move of moves) next = await client.play(move);
+      if (game === generation.current) setSnapshot(next);
+    } catch {
+      // The worker is replaced again and says so.
+    }
+  }, []);
+
   useEffect(() => {
     const client = new EngineClient();
     engine.current = client;
-    client.onReady = () => {
+    client.onReady = (recovered) => {
       // While engines play, the worker referees their games instead.
-      if (settingsRef.current.mode === "play") startGame(settingsRef.current.size, settingsRef.current.rule);
+      if (settingsRef.current.mode !== "play") return;
+      const { size, rule } = settingsRef.current;
+      const moves = played.current;
+      if (recovered && moves.length > 0) void resumeGame(size, rule, moves);
+      else startGame(size, rule);
     };
     client.onInfo = (i) => setInfo({ info: i, ...searching.current });
     return () => client.dispose();
-  }, [startGame]);
+  }, [startGame, resumeGame]);
+
+  // The moves of the game being played, for a worker that has to start over.
+  const played = useRef<Packed[]>([]);
+  useEffect(() => {
+    if (settingsRef.current.mode === "play") played.current = snapshot?.moves ?? [];
+  }, [snapshot]);
 
   // Decide whose turn it is after every change of position.
   useEffect(() => {
@@ -204,7 +229,7 @@ export function App() {
       // Abandon Tengen's search for the person's game, if one runs.
       if (client && (phase === "engine" || phase === "hint")) client.restart();
     } else {
-      watch.reset();
+      watch.leave();
       startGame(settings.size, settings.rule);
     }
   };

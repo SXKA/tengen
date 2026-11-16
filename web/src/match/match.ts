@@ -39,6 +39,7 @@ export class Match {
   onLoading: (side: Side) => void = () => {};
   onEnd: (end: MatchEnd) => void = () => {};
   private stopped = false;
+  private finished = false;
   private paused = false;
   private resume: (() => void) | null = null;
 
@@ -54,14 +55,20 @@ export class Match {
     return this.paused;
   }
 
+  /** Over by its own rules, its brains idle and ready for another game. */
+  get isFinished() {
+    return this.finished;
+  }
+
   async run() {
     const { size, rule } = this.settings;
     let snapshot: Snapshot;
     try {
       snapshot = await this.referee.newGame(size, rule);
       for (const move of this.settings.opening) snapshot = await this.referee.play(move);
-    } catch {
-      return;
+    } catch (error) {
+      if (this.stopped) return;
+      return this.end({ winner: null, reason: "error", detail: message(error) });
     }
     if (this.stopped) return;
     this.onSnapshot(snapshot);
@@ -98,8 +105,11 @@ export class Match {
       if (this.stopped) return;
       try {
         snapshot = await this.referee.play(move);
-      } catch {
+      } catch (error) {
         if (this.stopped) return;
+        if (!(error instanceof Error && error.message === "illegal move")) {
+          return this.end({ winner: null, reason: "error", detail: message(error) });
+        }
         const { x, y } = { x: move & 0xff, y: move >> 8 };
         return this.end({ winner: other(side), reason: "illegal", loser: side, detail: `${x},${y}` });
       }
@@ -120,7 +130,7 @@ export class Match {
     this.resume = null;
   }
 
-  /** Abandons the game at once. */
+  /** Abandons the game at once; a brain may be thinking, so all are stopped. */
   stop() {
     this.stopped = true;
     this.resume?.();
@@ -130,7 +140,9 @@ export class Match {
 
   private end(end: MatchEnd) {
     this.onThinking(null);
-    this.dispose();
+    // Brains that failed are no use again; the others can play another game.
+    if (end.reason === "five" || end.reason === "full") this.finished = true;
+    else this.dispose();
     this.onEnd(end);
   }
 

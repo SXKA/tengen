@@ -35,59 +35,44 @@ export interface Brain {
   dispose(): void;
 }
 
-/** Tengen in its own worker, so two Tengens do not share a hash table. */
+/**
+ * Tengen, thinking in the worker that referees the match, which always
+ * holds the game's position: no worker of its own, which phones are short
+ * of memory for. Two Tengens share it, hash table included.
+ */
 export class TengenBrain implements Brain {
   readonly name = "Tengen";
   threads = 1;
   onInfo: (info: BrainInfo) => void = () => {};
-  private client = new EngineClient();
-  private ready = new Promise<void>((resolve) => (this.client.onReady = resolve));
-  private size = 15;
-  private rule: RuleId = "freestyle";
-  /** Moves the worker's board holds. */
-  private synced: Packed[] = [];
-  private color: "black" | "white" = "black";
 
-  constructor() {
-    this.client.onInfo = (info) => {
-      this.onInfo({
-        depth: info.depth,
-        blackChance: this.client.blackWinChance(info.value, this.color),
-        mate: this.client.mateIn(info.value),
-        speed: (info.nodes / Math.max(info.elapsedMs, 1)) * 1000,
-        pv: info.pv,
-      });
-    };
-  }
+  constructor(private referee: EngineClient) {}
 
-  async start(size: number, rule: RuleId) {
-    await this.ready;
-    this.threads = this.client.threads;
-    this.size = size;
-    this.rule = rule;
-    await this.client.newGame(size, rule);
-    this.synced = [];
+  async start() {
+    this.threads = this.referee.threads;
   }
 
   async think(moves: Packed[], ms: number): Promise<Packed> {
-    const follows = this.synced.length <= moves.length && this.synced.every((m, i) => moves[i] === m);
-    if (!follows) {
-      await this.client.newGame(this.size, this.rule);
-      this.synced = [];
+    const color = moves.length % 2 === 0 ? "black" : "white";
+    const client = this.referee;
+    const before = client.onInfo;
+    client.onInfo = (info) =>
+      this.onInfo({
+        depth: info.depth,
+        blackChance: client.blackWinChance(info.value, color),
+        mate: client.mateIn(info.value),
+        speed: (info.nodes / Math.max(info.elapsedMs, 1)) * 1000,
+        pv: info.pv,
+      });
+    try {
+      const move = await client.think(ms);
+      if (move === null) throw new Error("Tengen found no move");
+      return move;
+    } finally {
+      client.onInfo = before;
     }
-    for (const move of moves.slice(this.synced.length)) {
-      await this.client.play(move);
-      this.synced.push(move);
-    }
-    this.color = moves.length % 2 === 0 ? "black" : "white";
-    const move = await this.client.think(ms);
-    if (move === null) throw new Error("Tengen found no move");
-    return move;
   }
 
-  dispose() {
-    this.client.dispose();
-  }
+  dispose() {}
 }
 
 /** A line-based connection to a Piskvork brain. */
@@ -125,6 +110,11 @@ export class PiskvorkBrain implements Brain {
   /** Clears an earlier failure, for a new connection. */
   protected reopen() {
     this.closed = null;
+  }
+
+  /** Whether the connection still works and nothing is being waited for. */
+  protected usable() {
+    return this.closed === null && this.waiter === null;
   }
 
   constructor(
@@ -390,16 +380,30 @@ export class HostedBrain extends PiskvorkBrain {
     this.relay = relay;
   }
 
+  /** What the loaded engine was started with, while it can play again. */
+  private loadedFor: string | null = null;
+
   async start(size: number, rule: RuleId) {
     const message = this.startMessage(rule);
-    try {
-      this.threads = await this.load(message);
-    } catch (error) {
-      if (!(error instanceof RetryError)) throw error;
-      // Its threads did not start in this browser: one thread, then.
-      this.threads = await this.load({ ...message, threads: 1 });
+    const key = JSON.stringify(message);
+    if (key !== this.loadedFor || !this.usable()) {
+      this.loadedFor = null;
+      try {
+        this.threads = await this.load(message);
+      } catch (error) {
+        if (!(error instanceof RetryError)) throw error;
+        // Its threads did not start in this browser: one thread, then.
+        this.threads = await this.load({ ...message, threads: 1 });
+      }
+      this.loadedFor = key;
     }
+    // START begins a new game in the engine already loaded.
     await super.start(size, rule);
+  }
+
+  dispose() {
+    this.loadedFor = null;
+    super.dispose();
   }
 
   private load(message: Record<string, unknown>): Promise<number> {

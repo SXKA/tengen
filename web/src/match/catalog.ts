@@ -1,4 +1,5 @@
 /** The engines a match can use, and what each one supports. */
+import type { EngineClient } from "../engine/client";
 import type { RuleId } from "../engine/protocol";
 import { HostedBrain, TengenBrain, type Brain } from "./brains";
 
@@ -96,11 +97,16 @@ function threads(): number {
   return Math.max(1, Math.min(navigator.hardwareConcurrency || 1, 8));
 }
 
-/** A new brain for `id`; `onProgress` hears about large downloads. */
-export function createBrain(id: EngineId, onProgress: (fraction: number) => void): Brain {
+/**
+ * A new brain for `id`.
+ *
+ * @param referee The worker refereeing the match, in which Tengen thinks.
+ * @param onProgress Hears about large downloads.
+ */
+export function createBrain(id: EngineId, referee: EngineClient, onProgress: (fraction: number) => void): Brain {
   switch (id) {
     case "tengen":
-      return new TengenBrain();
+      return new TengenBrain(referee);
     case "rapfi":
     case "rapfi-classical": {
       const evaluator = id === "rapfi" ? "nnue" : "classical";

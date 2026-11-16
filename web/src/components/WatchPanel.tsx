@@ -64,7 +64,8 @@ export function WatchPanel({
       break;
     case "over": {
       const winner = end?.winner ?? null;
-      heading = winner ? t.watchWins(names[winner]) : t.draw;
+      const aborted = end?.reason === "error" && !end.loser;
+      heading = winner ? t.watchWins(names[winner]) : aborted ? t.watchAborted : t.draw;
       if (end) {
         const loser = end.loser ? names[end.loser] : "";
         switch (end.reason) {
@@ -83,7 +84,7 @@ export function WatchPanel({
             note = t.endTimeout(loser);
             break;
           case "error":
-            note = t.endError(loser, end.detail ?? "");
+            note = aborted ? t.endAborted(end.detail ?? "") : t.endError(loser, end.detail ?? "");
         }
       }
       break;
