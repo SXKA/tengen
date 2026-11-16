@@ -166,6 +166,9 @@ fn play_game(
     (outcome, board.moves().collect(), None)
 }
 
+/// Pairs to play before the SPRT may stop the match.
+const MIN_PAIRS: u64 = 50;
+
 /// Shared tallies.
 struct Tally {
     pairs: Pentanomial,
@@ -190,14 +193,6 @@ fn main() {
     let sprt = options.sprt.map(|(e0, e1)| Sprt::new(e0, e1, 0.05, 0.05));
     let pairs_total = options.games.div_ceil(2);
 
-    // Openings are generated up front so every run with a seed is the same.
-    eprintln!("generating {pairs_total} openings...");
-    let mut rng = Rng(options.seed);
-    let mut engine = Engine::new(16);
-    let openings: Vec<Vec<Pos>> = (0..pairs_total)
-        .map(|_| opening(options.size, &mut rng, &mut engine))
-        .collect();
-
     let tally = Arc::new(Mutex::new(Tally {
         pairs: Pentanomial::default(),
         wins: 0,
@@ -221,12 +216,16 @@ fn main() {
     std::thread::scope(|scope| {
         for _ in 0..options.concurrency.min(pairs_total) {
             scope.spawn(|| {
+                let mut engine = Engine::new(16);
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     if index >= pairs_total || tally.lock().unwrap().done {
                         break;
                     }
-                    let opening = &openings[index];
+                    // Each pair's opening depends only on the seed and its
+                    // index, so a run is reproducible at any concurrency.
+                    let mut rng = Rng(options.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ index as u64);
+                    let opening = &opening(options.size, &mut rng, &mut engine);
                     // The new engine plays Black in game 1 and White in game 2.
                     let (b1, w1) = (&options.new, &options.base);
                     let g1 = play_game(&options, b1, w1, opening);
@@ -262,7 +261,7 @@ fn main() {
                     let games = t.wins + t.draws + t.losses;
                     let (elo, error) = t.pairs.elo();
                     let llr = sprt.as_ref().map(|s| s.llr(&t.pairs));
-                    if games.is_multiple_of(20) || games == 2 * pairs_total as u64 {
+                    if games.is_multiple_of(10) || games == 2 * pairs_total as u64 {
                         let llr_text = match (llr, &sprt) {
                             (Some(l), Some(s)) => format!("  LLR {l:.2} [{:.2}, {:.2}]", s.lower(), s.upper()),
                             _ => String::new(),
@@ -275,7 +274,10 @@ fn main() {
                             started.elapsed().as_secs_f64()
                         );
                     }
+                    // The normal approximation behind the LLR is poor for
+                    // tiny samples, so a decision needs a minimum of pairs.
                     if let (Some(l), Some(s)) = (llr, &sprt)
+                        && t.pairs.pairs() >= MIN_PAIRS
                         && (l >= s.upper() || l <= s.lower())
                     {
                         t.done = true;

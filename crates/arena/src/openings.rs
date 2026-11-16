@@ -43,7 +43,7 @@ pub fn opening(size: usize, rng: &mut Rng, engine: &mut Engine) -> Vec<Pos> {
             continue;
         }
         let value = engine.search(&board, &Limits::depth(6), |_| {}).value;
-        if value.abs() <= 120 {
+        if value.abs() <= 150 {
             return moves;
         }
     }
