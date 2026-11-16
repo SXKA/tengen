@@ -62,6 +62,7 @@ export function App() {
   const [info, setInfo] = useState<{ info: SearchInfo; color: StoneColor; ply: number } | null>(null);
   const [hint, setHint] = useState<Packed | null>(null);
   const [previewLine, setPreviewLine] = useState(false);
+  const [tapPending, setTapPending] = useState(false);
 
   const t = text[settings.lang];
   const engine = useRef<EngineClient | null>(null);
@@ -270,6 +271,7 @@ export function App() {
               threats={settings.threats && phase !== "over" ? (snapshot?.threats ?? null) : null}
               label={t.boardLabel(size)}
               onPlace={place}
+              onPending={setTapPending}
             />
           </div>
         </div>
@@ -278,11 +280,13 @@ export function App() {
           <section className="status" aria-live="polite">
             <h1 className={phase === "engine" || phase === "hint" ? "status-text busy" : "status-text"}>{status}</h1>
             <p className="status-note">
-              {phase === "human" && moves.length === 0
-                ? t.firstMove
-                : hint !== null && phase === "human"
-                  ? t.hintIs(name(hint))
-                  : lastMove}
+              {phase === "human" && tapPending
+                ? t.tapAgain
+                : phase === "human" && moves.length === 0
+                  ? t.firstMove
+                  : hint !== null && phase === "human"
+                    ? t.hintIs(name(hint))
+                    : lastMove}
             </p>
           </section>
 
