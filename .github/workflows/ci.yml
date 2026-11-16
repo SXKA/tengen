@@ -36,6 +36,34 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+  rules:
+    name: Rules (against the Gomocup judge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Gomocup/GomocupJudge
+          path: GomocupJudge
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Winning moves under every rule
+        env:
+          GOMOCUP_JUDGE: GomocupJudge
+        run: |
+          for rule in 0 1 4 8 9; do
+            cargo run --quiet --release -p tengen-arena --example dump_fives -- "$rule" 1500 > "fives-$rule.txt"
+            python3 scripts/judge_fives.py "fives-$rule.txt" "$rule"
+          done
+      - name: Renju forbidden points
+        env:
+          GOMOCUP_JUDGE: GomocupJudge
+        run: |
+          cargo run --quiet --release -p tengen-arena --example dump_forbidden -- 6000 > forbidden.txt
+          python3 scripts/judge_forbid.py forbidden.txt
+
   portable:
     name: Engine (${{ matrix.os }})
     strategy:

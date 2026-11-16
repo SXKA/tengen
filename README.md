@@ -4,7 +4,7 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![中文](https://img.shields.io/badge/語言-繁體中文-green.svg)](README.zh-TW.md)
 
-Tengen is a freestyle gomoku engine written in Rust. It plays in the browser, compiled to WebAssembly, and in
+Tengen is a gomoku and renju engine written in Rust. It plays in the browser, compiled to WebAssembly, and in
 [Gomocup](https://gomocup.org/) managers such as Piskvork as `pbrain-tengen`.
 
 *Tengen* (天元) is the center point of the board, where most games begin.
@@ -14,19 +14,40 @@ Tengen is a freestyle gomoku engine written in Rust. It plays in the browser, co
 - **In the browser**: open the website linked in the repository's About box. The engine runs locally in a
   Web Worker; nothing is sent to a server.
 - **In Piskvork or another Gomocup manager**: download `pbrain-tengen` for your system from
-  [Releases](https://github.com/SXKA/tengen/releases/latest) and add it as a brain. It supports 15×15 and 20×20
-  boards with the freestyle rule (five or more in a row wins).
+  [Releases](https://github.com/SXKA/tengen/releases/latest) and add it as a brain. It supports boards from 5×5 to
+  20×20 and every rule of the Piskvork protocol.
+
+## Rules
+
+| `INFO rule` | Rule | Wins |
+| --- | --- | --- |
+| 0 | Freestyle | Five or more in a row |
+| 1 | Standard | Exactly five; six or more does not win |
+| 4 | Renju | Black: exactly five, and Black may not make an overline, two fours or two open threes at once. White: five or more |
+| 8 | Freestyle caro | Six or more, or five not blocked by stones at both ends |
+| 9 | Caro (Gomocup) | Exactly five, not blocked by stones at both ends; the board edge does not block |
+
+Adding 2 to the rule number (a continuous game) is accepted too: stones the manager marks as belonging to nobody
+(`BOARD` field 3) block lines for both sides. The brain also answers `SWAP2BOARD` for swap2 openings.
+
+The win conditions and renju's forbidden points are checked in CI against the
+[Gomocup judge](https://github.com/Gomocup/GomocupJudge) on thousands of random positions.
 
 ## How it works
 
 The engine follows the design of strong classical gomoku engines, in particular
 [Rapfi](https://github.com/dhbloo/rapfi), without a neural network:
 
-- **Bitboard lines.** Stones are kept as one bitmask per color, direction and line. The 9-cell window around any
-  cell is a shift away.
-- **Pattern tables.** A 2¹⁸-entry table classifies every window into one of 13 line patterns (open three, four,
-  and so on). Each empty cell caches its patterns for both colors, an order-independent code of the four, and their
-  combination class (four-three, double three, ...). Placing a stone updates only the cells along its four lines.
+- **Bitboard lines.** Stones are kept as one bitmask per color, direction and line. The window around any cell is a
+  shift away.
+- **Pattern tables.** A 2¹⁸-entry table classifies every 9-cell window into one of 13 line patterns (open three,
+  four, and so on). The other rules look one cell further, to tell a five from an overline and, in caro, a stone
+  from the board edge, with 2²⁰-entry tables per rule and color. Each empty cell caches its patterns for both colors,
+  an order-independent code of the four, and their combination class (four-three, double three, ...). Placing a
+  stone updates only the cells along its four lines.
+- **Renju.** Overlines and double fours are read straight from the tables. A double three is forbidden only if both
+  threes can become straight fours by moves that are not forbidden themselves; that is checked by trying the moves,
+  recursively. Black never plays a forbidden point, and White wins when a four can only be blocked on one.
 - **Linear evaluation.** Every empty cell contributes a value by pattern code, plus a term for which forcing moves
   each side has. There are two tables, one for the opening and one for later in the game, blended by the number of
   stones (a tapered evaluation). The weights are fitted to self-play results by logistic regression (Texel tuning),
@@ -77,8 +98,12 @@ target/release/tengen-arena --new path/to/new/pbrain-tengen --base path/to/old/p
     --games 4000 --turn-ms 100 --sprt 0,10
 ```
 
-The **SPRT** workflow in GitHub Actions runs the same test between a branch and `master`. The **Tune** workflow
-plays self-play games with `tengen-tune`, fits new evaluation weights and checks them against the current ones.
+The **SPRT** workflow in GitHub Actions runs the same test between a branch and `master`, under any rule. The
+**Tune** workflow plays self-play games with `tengen-tune` under a chosen rule, fits new evaluation weights and
+checks them against the current ones; each rule can have its own weights (`crates/engine/src/weights-RULE.txt`,
+falling back to the freestyle `weights.txt`). The **Versus Rapfi** workflow builds
+[Rapfi](https://github.com/dhbloo/rapfi) and plays a fixed match against it, with its NNUE and with its classical
+evaluation, to measure the distance to the strongest open-source engine.
 
 ## Layout
 

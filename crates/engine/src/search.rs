@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, OnceLock};
 
-use crate::board::{Board, CELLS, Pos};
+use crate::board::{Board, CELLS, Color, Pos};
 use crate::eval::{self, Value};
 use crate::movegen::{self, Gen, ScoredMove};
 use crate::pattern::Pattern4;
@@ -498,7 +498,7 @@ impl<'a> Worker<'a> {
             Gen::Lost(plies) => {
                 // Every move loses; pick the most stubborn-looking one.
                 let us = self.board.side_to_move();
-                let values = eval::CellValues::standard();
+                let values = self.board.values();
                 list = self
                     .board
                     .candidates()
@@ -507,6 +507,7 @@ impl<'a> Worker<'a> {
                         score: movegen::move_score(&self.board, pos, us, values),
                     })
                     .collect();
+                list.retain(|m| self.board.is_legal(m.pos));
                 Some(plies)
             }
             Gen::Moves { .. } => None,
@@ -969,6 +970,9 @@ impl<'a> Worker<'a> {
         if opp_fives == 1 {
             // Answer the opponent's four; they then continue their attack.
             let block = board.five_point(them).expect("counted five point");
+            if us == Color::Black && self.board.is_forbidden(block) {
+                return mated_in(ply + 2);
+            }
             self.board.play(block);
             let v = -self.qsearch(-beta, -alpha, ply + 1, qply + 1);
             self.board.undo();
@@ -1005,7 +1009,7 @@ impl<'a> Worker<'a> {
         let original_alpha = alpha;
 
         let mut list = std::mem::take(&mut self.lists[ply]);
-        movegen::generate_fours(&self.board, &mut list);
+        movegen::generate_fours(&mut self.board, &mut list);
         if let Some(tt_move) = tte.and_then(|e| e.best_move)
             && let Some(i) = list.iter().position(|m| m.pos == tt_move)
         {
@@ -1079,6 +1083,52 @@ mod tests {
         assert_eq!(mate_moves(mated_in(2)), Some(-1));
         assert_eq!(mate_moves(mated_in(4)), Some(-2));
         assert_eq!(mate_moves(12), None);
+    }
+
+    #[test]
+    fn renju_white_wins_by_forcing_a_forbidden_block() {
+        use crate::Rule;
+        use crate::board::tests::position;
+        // Black's (8, 7) is a double three. White's four (9..=12, 6..=3)
+        // can only be stopped there.
+        let black = [(6, 7), (7, 7), (8, 5), (8, 6), (13, 2)];
+        let white = [(10, 5), (11, 4), (12, 3)];
+        let board = position(Rule::Renju, &black, &white);
+        assert_eq!(board.side_to_move(), Color::White);
+        let result = best(&board, 2);
+        assert_eq!(result.best_move, Some(Pos::new(9, 6)));
+        assert_eq!(result.value, mate_in(3));
+
+        let mut after = board.clone();
+        after.play(Pos::new(9, 6));
+        let mut list = Vec::new();
+        assert_eq!(movegen::generate(&mut after, &mut list), Gen::Lost(2));
+
+        // In freestyle the block is a fine move.
+        let free = position(Rule::Freestyle, &black, &white);
+        assert!(best(&free, 2).value < MATE_BOUND);
+    }
+
+    #[test]
+    fn renju_black_never_plays_a_forbidden_move() {
+        use crate::Rule;
+        use crate::board::tests::position;
+        // (8, 7) would be Black's double three, the obvious strong move.
+        let mut board = position(
+            Rule::Renju,
+            &[(6, 7), (7, 7), (8, 5), (8, 6)],
+            &[(0, 0), (14, 14), (0, 14)],
+        );
+        board.play(Pos::new(14, 0));
+        assert_eq!(board.side_to_move(), Color::Black);
+        assert!(board.is_forbidden(Pos::new(8, 7)));
+        let result = best(&board, 4);
+        let pos = result.best_move.unwrap();
+        assert_ne!(pos, Pos::new(8, 7));
+        assert!(board.is_legal(pos));
+        let mut list = Vec::new();
+        movegen::generate(&mut board, &mut list);
+        assert!(list.iter().all(|m| m.pos != Pos::new(8, 7)));
     }
 
     #[test]

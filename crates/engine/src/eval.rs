@@ -20,6 +20,7 @@ use std::sync::OnceLock;
 
 use crate::board::{Board, Color, Pos};
 use crate::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
+use crate::rule::Rule;
 
 /// Evaluation score. Mate scores live above [`crate::search::MATE_BOUND`].
 pub type Value = i32;
@@ -65,9 +66,9 @@ pub struct Weights {
 }
 
 /// Default move-ordering bonus for what a move makes, by combination.
-pub const DEFAULT_ATTACK: [i32; Pattern4::COUNT] = [0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
+pub const DEFAULT_ATTACK: [i32; Pattern4::COUNT] = [0, 0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
 /// Default move-ordering bonus for what a move prevents, by combination.
-pub const DEFAULT_DEFEND: [i32; Pattern4::COUNT] = [0, 3, 2, 8, 10, 24, 36, 100, 12, 40, 300, 1500, 8000];
+pub const DEFAULT_DEFEND: [i32; Pattern4::COUNT] = [0, 0, 3, 2, 8, 10, 24, 36, 100, 12, 40, 300, 1500, 8000];
 
 /// The default move-ordering tables for an evaluation table: a combination
 /// bonus plus the cell's value, three quarters of it for the opponent.
@@ -100,8 +101,8 @@ pub struct Factored {
 pub const DEFAULT_FACTORED: Factored = Factored {
     //        Dead B1 F1 B2 F2 F2A F2B B3 F3 F3S B4  F4   F5
     pattern: [0, 1, 2, 3, 8, 10, 12, 10, 30, 36, 24, 100, 250],
-    //         None L  K  J   I  H   G   F  E   D    C    B    A
-    pattern4: [0, 0, 0, 8, 10, 0, 20, 80, 0, 25, 150, 300, 600],
+    //         None X  L  K  J   I  H   G   F  E   D    C    B    A
+    pattern4: [0, 0, 0, 0, 8, 10, 0, 20, 80, 0, 25, 150, 300, 600],
     threat: default_threats(),
 };
 
@@ -169,11 +170,18 @@ impl Factored {
 
 impl Default for Weights {
     fn default() -> Weights {
-        Weights::parse(include_str!("weights.txt")).expect("built-in weights.txt is valid")
+        Weights::built_in(Rule::Freestyle)
     }
 }
 
 impl Weights {
+    /// The weights the engine ships with for `rule`: `weights-RULE.txt`
+    /// (e.g. `weights-renju.txt`) if it exists, else the freestyle
+    /// `weights.txt`.
+    pub fn built_in(rule: Rule) -> Weights {
+        Weights::parse(built_in_text(rule)).expect("built-in weights are valid")
+    }
+
     /// Parse the text form written by [`Weights`]'s `Display`: one line per
     /// table, a name followed by whitespace-separated integers. Lines
     /// starting with `#` are comments. Missing move-ordering tables get
@@ -236,13 +244,22 @@ impl std::fmt::Display for Weights {
     }
 }
 
-static ACTIVE: OnceLock<CellValues> = OnceLock::new();
+/// Weights chosen by [`install`], for every rule.
+static INSTALLED: OnceLock<CellValues> = OnceLock::new();
 
-/// Use `weights` instead of the built-in ones for the rest of the process.
+include!(concat!(env!("OUT_DIR"), "/weights.rs"));
+/// The built-in weights per rule, loaded on first use.
+static BUILT_IN: [OnceLock<CellValues>; Rule::COUNT] = [const { OnceLock::new() }; Rule::COUNT];
+
+/// Use `weights` instead of the built-in ones, under every rule, for the
+/// rest of the process.
 ///
 /// Must be called before the first board is created; fails afterwards.
 pub fn install(weights: &Weights) -> Result<(), String> {
-    ACTIVE
+    if BUILT_IN.iter().any(|v| v.get().is_some()) {
+        return Err("evaluation weights are already in use".to_string());
+    }
+    INSTALLED
         .set(CellValues::new(weights))
         .map_err(|_| "evaluation weights are already in use".to_string())
 }
@@ -257,10 +274,14 @@ pub struct CellValues {
 }
 
 impl CellValues {
-    /// Tables for the weights in use: the built-in ones unless [`install`]
-    /// chose others.
-    pub fn standard() -> &'static CellValues {
-        ACTIVE.get_or_init(|| CellValues::new(&Weights::default()))
+    /// Tables for the weights in use under `rule`: the built-in ones unless
+    /// [`install`] chose others.
+    #[inline]
+    pub fn for_rule(rule: Rule) -> &'static CellValues {
+        if let Some(values) = INSTALLED.get() {
+            return values;
+        }
+        BUILT_IN[rule.index()].get_or_init(|| CellValues::new(&Weights::built_in(rule)))
     }
 
     /// Tables for arbitrary weights.
@@ -318,7 +339,7 @@ pub fn threat_mask(board: &Board, us: Color) -> usize {
 pub fn evaluate(board: &Board) -> Value {
     let us = board.side_to_move();
     let them = us.opponent();
-    let values = CellValues::standard();
+    let values = board.values();
     let early = board.pattern_value(us) - board.pattern_value(them);
     let late = board.pattern_value_late(us) - board.pattern_value_late(them);
     blend(early, late, board.ply()) + values.threat[threat_mask(board, us)]

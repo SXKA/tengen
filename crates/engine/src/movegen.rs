@@ -11,10 +11,14 @@
 //! Defences are found by trying every cell that could matter (along the
 //! threatening lines) and keeping those after which the opponent has no open
 //! four left. This is exact and cheap because the situation is rare.
+//!
+//! Under renju rules Black's forbidden moves are never generated, and a
+//! five that can only be blocked on a forbidden point wins.
 
 use crate::board::{Board, Color, Pos};
 use crate::eval::CellValues;
-use crate::pattern::{Pattern, Pattern4};
+use crate::pattern::{Pattern, Pattern4, Tables};
+use crate::rule::Rule;
 
 /// A move with an ordering score.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +53,7 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     moves.clear();
     let us = board.side_to_move();
     let them = us.opponent();
-    let values = CellValues::standard();
+    let values = board.values();
 
     if let Some(pos) = board.five_point(us) {
         return Gen::Win(pos);
@@ -58,6 +62,9 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
         0 => {}
         1 => {
             let pos = board.five_point(them).expect("counted five point");
+            if forbids(board) && board.is_forbidden(pos) {
+                return Gen::Lost(2);
+            }
             moves.push(ScoredMove { pos, score: 0 });
             return Gen::Moves { forced: true };
         }
@@ -80,14 +87,31 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
             score: move_score(board, pos, us, values),
         });
     }
-    if moves.is_empty() && !board.is_full() {
-        // No stone yet: start in the center.
-        moves.push(ScoredMove {
-            pos: board.center(),
-            score: 0,
-        });
+    if forbids(board) {
+        moves.retain(|m| board.p4(m.pos, us) != Pattern4::Forbidden || !board.is_forbidden(m.pos));
+    }
+    if moves.is_empty() {
+        fallback(board, moves);
     }
     Gen::Moves { forced: false }
+}
+
+/// Whether the side to move has forbidden moves.
+#[inline]
+fn forbids(board: &Board) -> bool {
+    board.rule() == Rule::Renju && board.side_to_move() == Color::Black
+}
+
+/// Moves when no cell is near a stone: the center on an empty board, else
+/// the legal cell closest to it.
+fn fallback(board: &mut Board, moves: &mut Vec<ScoredMove>) {
+    let center = board.center();
+    let n = board.size();
+    let mut cells: Vec<Pos> = (0..n * n).map(|i| Pos::new(i % n, i / n)).collect();
+    cells.sort_by_key(|&p| (p.distance(center), p));
+    if let Some(pos) = cells.into_iter().find(|&p| board.is_legal(p)) {
+        moves.push(ScoredMove { pos, score: 0 });
+    }
 }
 
 /// Moves against an opponent who can make an open four: our own fours, and
@@ -132,11 +156,15 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
         }
     }
 
+    let forbid = forbids(board);
     for &pos in &try_cells {
         let four = board.p4(pos, us) >= Pattern4::EBlock4;
         let score = move_score(board, pos, us, values);
         if four {
             moves.push(ScoredMove { pos, score });
+            continue;
+        }
+        if forbid && board.is_forbidden(pos) {
             continue;
         }
         board.play(pos);
@@ -150,19 +178,43 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
 
 /// Fill `moves` with every move that makes a four (or five) for the side to
 /// move, strongest first. Used by the threat-space quiescence search.
-pub fn generate_fours(board: &Board, moves: &mut Vec<ScoredMove>) {
+///
+/// Under renju rules this includes Black's fours that look like double
+/// threes but are legal because one of the threes is not real.
+pub fn generate_fours(board: &mut Board, moves: &mut Vec<ScoredMove>) {
     moves.clear();
     let us = board.side_to_move();
-    if board.p4_count_at_least(us, Pattern4::EBlock4) == 0 {
+    let forbid = forbids(board);
+    if !forbid && board.p4_count_at_least(us, Pattern4::EBlock4) == 0 {
         return;
     }
-    let values = CellValues::standard();
+    let values = board.values();
+    let tables = Tables::get();
     for pos in board.candidates() {
         let p4 = board.p4(pos, us);
         if p4 >= Pattern4::EBlock4 {
             let score = (p4 as i32) * 10_000 + move_score(board, pos, us, values);
             moves.push(ScoredMove { pos, score });
+        } else if forbid && p4 == Pattern4::Forbidden {
+            // Checked below, once the board is free to borrow.
+            let plain = tables.pattern4(board.pcode(pos, us));
+            if plain >= Pattern4::EBlock4 && plain < Pattern4::BFlex4 {
+                moves.push(ScoredMove {
+                    pos,
+                    score: -((plain as i32) * 10_000 + move_score(board, pos, us, values)),
+                });
+            }
         }
+    }
+    if forbid {
+        // Candidates were marked with negative scores.
+        moves.retain_mut(|m| {
+            if m.score >= 0 {
+                return true;
+            }
+            m.score = -m.score;
+            !board.is_forbidden(m.pos)
+        });
     }
     moves.sort_unstable_by_key(|m| std::cmp::Reverse(m.score));
 }
@@ -262,7 +314,7 @@ mod tests {
     fn fours_are_listed_strongest_first() {
         let mut board = board_with(&[(5, 7), (0, 0), (6, 7), (0, 2), (7, 7), (0, 4)]);
         let mut moves = Vec::new();
-        generate_fours(&board, &mut moves);
+        generate_fours(&mut board, &mut moves);
         // The open three makes open fours at (4, 7) and (8, 7) and split
         // fours at (3, 7) and (9, 7).
         let first: Vec<Pos> = moves.iter().take(2).map(|m| m.pos).collect();

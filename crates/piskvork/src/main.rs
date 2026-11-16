@@ -1,5 +1,9 @@
 //! Tengen as a Gomocup brain, speaking the Piskvork protocol on stdin/stdout.
 //!
+//! Every rule of the protocol is supported: freestyle, exactly five, renju,
+//! caro with and without overlines, and continuous games, plus the
+//! `SWAP2BOARD` opening.
+//!
 //! Also runs `pbrain-tengen bench [depth]` to print the benchmark node count.
 //! `--weights FILE` replaces the built-in evaluation weights (for tuning).
 
@@ -11,7 +15,7 @@ use std::time::Duration;
 
 use tengen_engine::board::MAX_SIZE;
 use tengen_engine::search::mate_moves;
-use tengen_engine::{Board, Engine, Info, Limits, Pos, bench};
+use tengen_engine::{Board, Engine, Info, Limits, Pos, Rule, SearchResult, bench};
 
 const ABOUT: &str = concat!(
     "name=\"Tengen\", version=\"",
@@ -58,7 +62,7 @@ struct Brain {
     /// Milliseconds left in the game, when the manager says.
     time_left: Option<f64>,
     max_memory: u64,
-    rule: u32,
+    rule: Rule,
 }
 
 impl Brain {
@@ -72,8 +76,13 @@ impl Brain {
             timeout_match: 0.0,
             time_left: None,
             max_memory: 0,
-            rule: 0,
+            rule: Rule::Freestyle,
         }
+    }
+
+    /// A new board of `size` for the current rule.
+    fn new_board(&self, size: usize) -> Board {
+        Board::with_rule(size, self.rule)
     }
 
     fn limits(&self, board: &Board) -> Limits {
@@ -106,13 +115,15 @@ impl Brain {
                 }
             }
             ("rule", Some(n)) => {
-                self.rule = n as u32;
-                if self.rule & !2 != 0 {
-                    // Only freestyle (0) and its continuous-game variant (2).
-                    println!(
-                        "MESSAGE Tengen plays freestyle only; rule {} is treated as freestyle",
-                        self.rule
-                    );
+                // The continuous-game bit needs nothing more than accepting
+                // field 3 in BOARD.
+                let rule = Rule::from_piskvork(n as u32);
+                if rule != self.rule {
+                    self.rule = rule;
+                    self.engine.clear();
+                    if let Some(board) = self.board.take() {
+                        self.board = Some(with_rule(&board, rule));
+                    }
                 }
             }
             ("thread_num", Some(n)) => self.engine.set_threads(n as usize),
@@ -163,7 +174,7 @@ impl Brain {
             "" => {}
             "START" => match rest.trim().parse::<usize>() {
                 Ok(size) if (5..=MAX_SIZE).contains(&size) => {
-                    self.board = Some(Board::new(size));
+                    self.board = Some(self.new_board(size));
                     self.engine.clear();
                     println!("OK");
                 }
@@ -172,7 +183,7 @@ impl Brain {
             "RECTSTART" => println!("ERROR rectangular boards are not supported"),
             "RESTART" => match self.board.as_ref().map(Board::size) {
                 Some(size) => {
-                    self.board = Some(Board::new(size));
+                    self.board = Some(self.new_board(size));
                     self.engine.clear();
                     println!("OK");
                 }
@@ -188,25 +199,13 @@ impl Brain {
                 _ => println!("ERROR invalid move {}", rest.trim()),
             },
             "BOARD" => {
-                let mut stones = Vec::new();
-                loop {
-                    let Some(entry) = input.next() else { return false };
-                    let entry = entry.trim().to_string();
-                    if entry.eq_ignore_ascii_case("DONE") {
-                        break;
-                    }
-                    let fields: Vec<&str> = entry.split(',').map(str::trim).collect();
-                    if let [x, y, who] = fields[..]
-                        && let (Ok(x), Ok(y), Ok(who)) = (x.parse(), y.parse(), who.parse::<u8>())
-                    {
-                        stones.push((x, y, who));
-                    }
-                }
+                let Some(stones) = read_stones(input) else { return false };
+                let rule = self.rule;
                 match self
                     .board
                     .as_ref()
                     .map(Board::size)
-                    .map(|size| board_from(size, &stones))
+                    .map(|size| board_from(size, rule, &stones))
                 {
                     Some(Ok(board)) => {
                         self.board = Some(board);
@@ -215,6 +214,10 @@ impl Brain {
                     Some(Err(e)) => println!("ERROR {e}"),
                     None => println!("ERROR no game started"),
                 }
+            }
+            "SWAP2BOARD" => {
+                let Some(stones) = read_stones(input) else { return false };
+                self.swap2(&stones);
             }
             "TAKEBACK" => match (parse_move(rest), self.board.as_mut()) {
                 (Some(pos), Some(board)) if board.last_move() == Some(pos) => {
@@ -234,6 +237,144 @@ impl Brain {
         }
         true
     }
+}
+
+impl Brain {
+    /// Answer `SWAP2BOARD` with the opening stones listed so far, in the
+    /// order they were placed (Black, White, Black, ...).
+    ///
+    /// * No stones: propose three, the most balanced of a set of standard
+    ///   shapes.
+    /// * Three or five stones: take the side that searches as better: play
+    ///   White's next move, or answer `SWAP` to take Black.
+    fn swap2(&mut self, stones: &[(usize, usize, u8)]) {
+        let Some(size) = self.board.as_ref().map(Board::size) else {
+            println!("ERROR no game started");
+            return;
+        };
+        let budget = self.swap2_budget();
+        let mut board = self.new_board(size);
+        for &(x, y, _) in stones {
+            let pos = Pos::new(x, y);
+            if x >= size || y >= size || !board.is_empty(pos) {
+                println!("ERROR bad stone {x},{y}");
+                return;
+            }
+            board.play(pos);
+        }
+        match stones.len() {
+            0 => {
+                let opening = self.balanced_opening(size, budget);
+                let mut board = self.new_board(size);
+                for &pos in &opening {
+                    board.play(pos);
+                }
+                self.board = Some(board);
+                let text: Vec<String> = opening.iter().map(|p| format!("{},{}", p.x(), p.y())).collect();
+                println!("{}", text.join(" "));
+            }
+            3 | 5 => {
+                // White is to move; its score decides who we want to be.
+                let result = self.engine.search(&board, &Limits::movetime(budget), |_| {});
+                match result.best_move {
+                    Some(pos) if result.value >= 0 => {
+                        board.play(pos);
+                        self.board = Some(board);
+                        println!("{},{}", pos.x(), pos.y());
+                    }
+                    _ => {
+                        self.board = Some(board);
+                        println!("SWAP");
+                    }
+                }
+            }
+            n => println!("ERROR SWAP2BOARD with {n} stones"),
+        }
+        self.engine.clear();
+    }
+
+    /// Milliseconds to spend on a swap2 decision.
+    fn swap2_budget(&self) -> f64 {
+        let turn = if self.timeout_turn > 0.0 {
+            self.timeout_turn
+        } else {
+            1000.0
+        };
+        let left = match (self.time_left, self.timeout_match) {
+            (Some(t), _) => t / 8.0,
+            (None, m) if m > 0.0 => m / 8.0,
+            _ => f64::INFINITY,
+        };
+        (turn.min(left) * 0.8 - 50.0).max(20.0)
+    }
+
+    /// Three opening stones around the center, chosen so that the side to
+    /// move (White) is as close to even as a short search can tell.
+    fn balanced_opening(&mut self, size: usize, budget: f64) -> Vec<Pos> {
+        let c = (size / 2) as isize;
+        let at = |dx: isize, dy: isize| Pos::new((c + dx) as usize, (c + dy) as usize);
+        let mut candidates = Vec::new();
+        for (wx, wy) in [(1, 0), (1, 1)] {
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    if (dx, dy) != (0, 0) && (dx, dy) != (wx, wy) {
+                        candidates.push([at(0, 0), at(wx, wy), at(dx, dy)]);
+                    }
+                }
+            }
+        }
+        let each = (budget / candidates.len() as f64).max(5.0);
+        let mut best = (i32::MAX, candidates[0]);
+        for stones in candidates {
+            let mut board = self.new_board(size);
+            for &pos in &stones {
+                board.play(pos);
+            }
+            let result: SearchResult = self.engine.search(&board, &Limits::movetime(each), |_| {});
+            if result.value.abs() < best.0 {
+                best = (result.value.abs(), stones);
+            }
+        }
+        best.1.to_vec()
+    }
+}
+
+/// Read `x,y[,field]` lines up to `DONE`. `None` at end of input.
+fn read_stones(input: &mut Input) -> Option<Vec<(usize, usize, u8)>> {
+    let mut stones = Vec::new();
+    loop {
+        let entry = input.next()?;
+        let entry = entry.trim();
+        if entry.eq_ignore_ascii_case("DONE") {
+            return Some(stones);
+        }
+        let fields: Vec<&str> = entry.split(',').map(str::trim).collect();
+        match fields[..] {
+            [x, y, who] => {
+                if let (Ok(x), Ok(y), Ok(who)) = (x.parse(), y.parse(), who.parse::<u8>()) {
+                    stones.push((x, y, who));
+                }
+            }
+            [x, y] => {
+                if let (Ok(x), Ok(y)) = (x.parse(), y.parse()) {
+                    stones.push((x, y, 0));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The same position under another rule.
+fn with_rule(board: &Board, rule: Rule) -> Board {
+    let mut out = Board::with_rule(board.size(), rule);
+    for pos in board.walls() {
+        out.place_wall(pos);
+    }
+    for pos in board.moves() {
+        out.play(pos);
+    }
+    out
 }
 
 fn report(info: &Info) {
@@ -266,10 +407,15 @@ fn parse_move(text: &str) -> Option<Pos> {
 }
 
 /// Rebuild a position from a BOARD listing: field 1 is our stone, 2 the
-/// opponent's, in the order they were played. We are always to move.
-fn board_from(size: usize, stones: &[(usize, usize, u8)]) -> Result<Board, String> {
+/// opponent's, in the order they were played, and 3 (continuous games) a
+/// stone that belongs to nobody any more. We are always to move.
+fn board_from(size: usize, rule: Rule, stones: &[(usize, usize, u8)]) -> Result<Board, String> {
+    if let Some(&(x, y, _)) = stones.iter().find(|s| s.0 >= size || s.1 >= size) {
+        return Err(format!("stone {x},{y} is off the board"));
+    }
     let ours: Vec<Pos> = stones.iter().filter(|s| s.2 == 1).map(|s| Pos::new(s.0, s.1)).collect();
-    let theirs: Vec<Pos> = stones.iter().filter(|s| s.2 != 1).map(|s| Pos::new(s.0, s.1)).collect();
+    let theirs: Vec<Pos> = stones.iter().filter(|s| s.2 == 2).map(|s| Pos::new(s.0, s.1)).collect();
+    let walls: Vec<Pos> = stones.iter().filter(|s| s.2 == 3).map(|s| Pos::new(s.0, s.1)).collect();
     let (first, second) = match theirs.len().checked_sub(ours.len()) {
         Some(0) => (&ours, &theirs),
         Some(1) => (&theirs, &ours),
@@ -281,7 +427,13 @@ fn board_from(size: usize, stones: &[(usize, usize, u8)]) -> Result<Board, Strin
             ));
         }
     };
-    let mut board = Board::new(size);
+    let mut board = Board::with_rule(size, rule);
+    for &pos in &walls {
+        if !board.is_empty(pos) {
+            return Err(format!("bad stone {},{}", pos.x(), pos.y()));
+        }
+        board.place_wall(pos);
+    }
     for i in 0..first.len() {
         for pos in [first.get(i), second.get(i)].into_iter().flatten() {
             if !board.is_empty(*pos) {
@@ -358,6 +510,7 @@ mod tests {
 
     #[test]
     fn rebuilds_positions_for_either_color() {
+        let board_from = |size, stones: &[(usize, usize, u8)]| board_from(size, Rule::Freestyle, stones);
         let board = board_from(15, &[(7, 7, 2), (8, 8, 1), (7, 8, 2)]).unwrap();
         assert_eq!(board.ply(), 3);
         assert_eq!(
@@ -369,6 +522,70 @@ mod tests {
         assert!(board_from(15, &[(7, 7, 1)]).is_err());
         assert!(board_from(15, &[(7, 7, 1), (7, 7, 2)]).is_err());
         assert_eq!(board_from(15, &[]).unwrap().ply(), 0);
+        assert!(board_from(15, &[(15, 0, 1), (0, 0, 2)]).is_err());
+    }
+
+    /// Run the brain on a script of commands and collect what it prints
+    /// (moves and answers, not MESSAGE lines).
+    fn session(brain: &mut Brain, script: &str) -> Vec<String> {
+        let (sender, receiver) = mpsc::channel();
+        for line in script.lines() {
+            sender.send(line.to_string()).unwrap();
+        }
+        drop(sender);
+        let mut input = Input {
+            queue: VecDeque::new(),
+            receiver,
+        };
+        let mut out = Vec::new();
+        while let Some(line) = input.next() {
+            let before = brain.board.as_ref().map(|b| b.moves().collect::<Vec<_>>());
+            brain.handle(&line, &mut input);
+            let after = brain.board.as_ref().map(|b| b.moves().collect::<Vec<_>>());
+            if before != after {
+                out.push(format!("{:?}", after.and_then(|m| m.last().copied())));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn renju_rule_and_continuous_boards() {
+        let mut brain = Brain::new();
+        brain.engine.set_threads(1);
+        brain.apply_info("timeout_turn", "200");
+        brain.apply_info("rule", "6");
+        assert_eq!(brain.rule, Rule::Renju);
+        // We are Black (one stone each, our turn). (8, 7) is our double
+        // three, so it must not be played; (3, 3) is a wall.
+        let script = "START 15\nBOARD\n6,7,1\n0,0,2\n7,7,1\n0,14,2\n8,5,1\n14,0,2\n8,6,1\n14,14,2\n3,3,3\nDONE";
+        session(&mut brain, script);
+        let board = brain.board.as_mut().unwrap();
+        assert_eq!(board.rule(), Rule::Renju);
+        assert!(board.is_wall(Pos::new(3, 3)));
+        let last = board.last_move().unwrap();
+        assert_ne!(last, Pos::new(8, 7));
+        assert_eq!(board.stone(last), Some(tengen_engine::Color::Black));
+        // A rule change keeps the position.
+        brain.apply_info("rule", "1");
+        let board = brain.board.as_ref().unwrap();
+        assert_eq!((board.rule(), board.ply()), (Rule::Standard, 9));
+        assert!(board.is_wall(Pos::new(3, 3)));
+    }
+
+    #[test]
+    fn swap2_proposes_and_chooses() {
+        let mut brain = Brain::new();
+        brain.engine.set_threads(1);
+        brain.apply_info("timeout_turn", "300");
+        session(&mut brain, "START 15\nSWAP2BOARD\nDONE");
+        assert_eq!(brain.board.as_ref().unwrap().ply(), 3);
+        // A clearly winning Black opening: we would rather be Black.
+        session(&mut brain, "SWAP2BOARD\n7,7\n0,0\n8,8\nDONE");
+        assert_eq!(brain.board.as_ref().unwrap().ply(), 3);
+        // A hopeless one for Black: keep White and play.
+        session(&mut brain, "SWAP2BOARD\n0,0\n7,7\n14,14\n8,8\n0,14\nDONE");
+        assert_eq!(brain.board.as_ref().unwrap().ply(), 6);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 export type Lang = "en" | "zh";
 
 const en = {
-  tagline: "Freestyle gomoku against an engine that runs in your browser.",
+  tagline: "Gomoku and renju against an engine that runs in your browser.",
   yourMove: "Your move",
   tapAgain: "Tap again to place the stone",
   thinking: "Tengen is thinking",
@@ -20,6 +20,25 @@ const en = {
   strength: "Strength",
   levels: ["Easy", "Medium", "Hard", "Max"],
   board: "Board",
+  rule: "Rules",
+  rules: {
+    freestyle: { name: "Freestyle", note: "Five or more in a row wins." },
+    standard: { name: "Standard", note: "Exactly five wins; six or more does not." },
+    renju: {
+      name: "Renju",
+      note: "Black may not make an overline, two fours or two open threes at once (marked ×). White wins with five or more.",
+    },
+    caro: {
+      name: "Caro",
+      note: "Exactly five wins, unless stones block both ends. The board edge does not block.",
+    },
+    "freestyle-caro": {
+      name: "Free caro",
+      note: "Six or more wins; five wins unless stones block both ends.",
+    },
+  },
+  forbiddenNote: (n: number) =>
+    `${n === 1 ? "The point" : `${n} points`} marked × ${n === 1 ? "is" : "are"} forbidden for Black.`,
   showThreats: "Mark fours",
   showThreatsNote: "Points where a stone makes four or five.",
   newGame: "New game",
@@ -47,7 +66,7 @@ const en = {
 };
 
 const zh: typeof en = {
-  tagline: "在瀏覽器裡和引擎下自由規則五子棋。",
+  tagline: "在瀏覽器裡和引擎下五子棋與連珠。",
   yourMove: "輪到你",
   tapAgain: "再點一次落子",
   thinking: "Tengen 思考中",
@@ -64,6 +83,15 @@ const zh: typeof en = {
   strength: "強度",
   levels: ["簡單", "普通", "困難", "全力"],
   board: "棋盤",
+  rule: "規則",
+  rules: {
+    freestyle: { name: "自由", note: "連成五子或更多即勝。" },
+    standard: { name: "標準", note: "剛好五子才勝，長連不算。" },
+    renju: { name: "連珠", note: "黑棋不能長連、四四或三三（標 ×）；白棋五子以上即勝。" },
+    caro: { name: "Caro", note: "剛好五子才勝，兩端都被棋子擋住則不算；棋盤邊緣不算擋。" },
+    "freestyle-caro": { name: "自由 Caro", note: "六子以上即勝；五子兩端都被棋子擋住則不算。" },
+  },
+  forbiddenNote: (n: number) => `標 × 的 ${n} 個點是黑棋禁手。`,
   showThreats: "標出衝四點",
   showThreatsNote: "落子即成四或成五的位置。",
   newGame: "新對局",

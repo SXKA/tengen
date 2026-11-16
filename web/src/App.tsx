@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Board, type Ghost, type StoneColor } from "./components/Board";
 import { WinBar } from "./components/WinBar";
 import { EngineClient } from "./engine/client";
-import { unpack, type Packed, type SearchInfo, type Snapshot } from "./engine/protocol";
+import { RULES, unpack, type Packed, type RuleId, type SearchInfo, type Snapshot } from "./engine/protocol";
 import { coordinate, defaultLang, text, type Lang } from "./i18n";
 
 /** Think time and depth cap per strength level. */
@@ -19,6 +19,7 @@ interface Settings {
   human: StoneColor;
   level: number;
   size: number;
+  rule: RuleId;
   threats: boolean;
   lang: Lang;
 }
@@ -26,10 +27,19 @@ interface Settings {
 const STORAGE_KEY = "tengen.settings";
 
 function loadSettings(): Settings {
-  const fallback: Settings = { human: "black", level: 1, size: 15, threats: false, lang: defaultLang() };
+  const fallback: Settings = {
+    human: "black",
+    level: 1,
+    size: 15,
+    rule: "freestyle",
+    threats: false,
+    lang: defaultLang(),
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<Settings>;
-    return { ...fallback, ...saved };
+    const settings = { ...fallback, ...saved };
+    if (!RULES.includes(settings.rule)) settings.rule = fallback.rule;
+    return settings;
   } catch {
     return fallback;
   }
@@ -80,20 +90,20 @@ export function App() {
     });
   };
 
-  const startGame = useCallback((size: number) => {
+  const startGame = useCallback((size: number, rule: RuleId) => {
     const client = engine.current;
     if (!client) return;
     generation.current++;
     setInfo(null);
     setHint(null);
     setPhase("loading");
-    client.newGame(size).then(setSnapshot, () => {});
+    client.newGame(size, rule).then(setSnapshot, () => {});
   }, []);
 
   useEffect(() => {
     const client = new EngineClient();
     engine.current = client;
-    client.onReady = () => startGame(settingsRef.current.size);
+    client.onReady = () => startGame(settingsRef.current.size, settingsRef.current.rule);
     client.onInfo = (i) => setInfo({ info: i, ...searching.current });
     return () => client.dispose();
   }, [startGame]);
@@ -146,13 +156,20 @@ export function App() {
       settingsRef.current = next;
       client.restart();
     } else {
-      startGame(next.size);
+      startGame(next.size, next.rule);
     }
   };
 
   const moves = snapshot?.moves ?? [];
   const size = snapshot?.size ?? settings.size;
   const toMove = sideToMove(moves);
+  // Black's forbidden points, marked while Black is to move.
+  const forbidden: Packed[] = [];
+  if (snapshot && toMove === "black" && phase !== "over") {
+    snapshot.threats.black.forEach((v, i) => {
+      if (v === -2) forbidden.push((i % size) | (Math.floor(i / size) << 8));
+    });
+  }
   // Undo back to the person's previous turn.
   const undoCount = toMove === settings.human ? 2 : 1;
   const minimum = settings.human === "white" ? 1 : 0;
@@ -268,6 +285,7 @@ export function App() {
               human={settings.human}
               interactive={phase === "human"}
               ghosts={ghosts}
+              forbidden={forbidden}
               threats={settings.threats && phase !== "over" ? (snapshot?.threats ?? null) : null}
               label={t.boardLabel(size)}
               onPlace={place}
@@ -284,9 +302,11 @@ export function App() {
                 ? t.tapAgain
                 : phase === "human" && moves.length === 0
                   ? t.firstMove
-                  : hint !== null && phase === "human"
-                    ? t.hintIs(name(hint))
-                    : lastMove}
+                  : phase === "human" && forbidden.length > 0
+                    ? t.forbiddenNote(forbidden.length)
+                    : hint !== null && phase === "human"
+                      ? t.hintIs(name(hint))
+                      : lastMove}
             </p>
           </section>
 
@@ -376,6 +396,17 @@ export function App() {
                   {label}
                 </label>
               ))}
+            </fieldset>
+
+            <fieldset className="choice rules">
+              <legend>{t.rule}</legend>
+              {RULES.map((r) => (
+                <label key={r} className={settings.rule === r ? "selected" : ""}>
+                  <input type="radio" name="rule" checked={settings.rule === r} onChange={() => newGame({ rule: r })} />
+                  {t.rules[r].name}
+                </label>
+              ))}
+              <p className="note">{t.rules[settings.rule].note}</p>
             </fieldset>
 
             <fieldset className="choice">

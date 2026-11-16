@@ -4,7 +4,8 @@ name: Tune
 # move-ordering tables to them, and check the fitted weights against the
 # current ones with an SPRT. Start it from the Actions tab. The weights and
 # games are attached to the run, and the weights are also pushed to the
-# branch tune/<run id>, ready for a pull request.
+# branch tune/<run id>, ready for a pull request: as weights.txt for
+# freestyle, weights-RULE.txt for the other rules.
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +18,11 @@ on:
       reuse_run:
         description: Fit the games of this earlier Tune run instead of playing new ones (run id)
         default: ""
+      rule:
+        description: Game rule
+        type: choice
+        options: [freestyle, standard, renju, caro, freestyle-caro]
+        default: freestyle
 
 permissions:
   contents: write
@@ -58,7 +64,7 @@ jobs:
       - name: Self-play
         run: |
           chmod +x tengen-tune
-          ./tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} \
+          ./tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} --rule ${{ inputs.rule }} \
             --seed "${{ github.run_id }}${{ matrix.shard }}" --out games-${{ matrix.shard }}.txt
       - uses: actions/upload-artifact@v7
         with:
@@ -97,15 +103,19 @@ jobs:
           artifacts/tengen-arena \
             --new "artifacts/pbrain-tengen --weights weights.txt" \
             --base artifacts/pbrain-tengen \
-            --games 4000 --turn-ms 100 --sprt 0,10 \
+            --games 4000 --turn-ms 100 --sprt 0,10 --rule ${{ inputs.rule }} \
             --concurrency "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Push the weights to a branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "tune/${{ github.run_id }}"
-          cp weights.txt crates/engine/src/weights.txt
-          git commit -am "Evaluation and move-ordering weights from Tune run ${{ github.run_id }}"
+          rule="${{ inputs.rule }}"
+          file=crates/engine/src/weights.txt
+          [ "$rule" = freestyle ] || file="crates/engine/src/weights-$rule.txt"
+          cp weights.txt "$file"
+          git add "$file"
+          git commit -m "Evaluation and move-ordering weights for $rule from Tune run ${{ github.run_id }}"
           git push origin "tune/${{ github.run_id }}"
       - uses: actions/upload-artifact@v7
         with:

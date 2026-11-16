@@ -210,6 +210,14 @@ a:hover {
   fill: var(--seal);
 }
 
+/* Renju: points Black may not play. */
+.forbidden {
+  stroke: var(--seal);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  fill: none;
+}
+
 .five-line {
   stroke: var(--seal);
   stroke-width: 5;
