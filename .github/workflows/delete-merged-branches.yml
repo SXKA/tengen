@@ -3,7 +3,8 @@ name: Delete merged branches
 # Deletes a pull request's branch once the pull request is merged (what the
 # "Automatically delete head branches" setting does). When this file first
 # lands on the default branch, or when run by hand, it also deletes every
-# branch whose pull requests are all merged or closed.
+# branch whose pull requests are all merged or closed, and, when run by hand,
+# the branches named in the input (for branches that never had one).
 on:
   pull_request:
     types: [closed]
@@ -11,6 +12,10 @@ on:
     branches: [main, master]
     paths: [.github/workflows/delete-merged-branches.yml]
   workflow_dispatch:
+    inputs:
+      branches:
+        description: Also delete these branches (space-separated)
+        default: ""
 
 permissions:
   contents: write
@@ -32,8 +37,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          NAMED: ${{ inputs.branches }}
         run: |
           default=$(gh api "repos/$REPO" --jq .default_branch)
+          for branch in $NAMED; do
+            [ "$branch" = "$default" ] && continue
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" && echo "deleted $branch"
+          done
           owner=${REPO%%/*}
           gh api "repos/$REPO/branches" --paginate --jq '.[].name' | while read -r branch; do
             [ "$branch" = "$default" ] && continue
