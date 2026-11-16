@@ -34,14 +34,23 @@ interface Exports {
 const scope = self as unknown as DedicatedWorkerGlobalScope;
 const post = (message: Response) => scope.postMessage(message);
 
-let engine: Exports;
+let engine!: Exports;
 let memory: WebAssembly.Memory;
 let size = 15;
 let result: Snapshot["result"] = 0;
 
-/** Search threads to use: one per core, within reason. */
+/** iPhones and iPads, iPads included when they say they are Macs. */
+const appleMobile =
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+/**
+ * Search threads to use: one per core, within reason. One on iPhones and
+ * iPads, whose Safari runs out of room for shared memory after a while and
+ * then cannot start the engine at all.
+ */
 function threadCount(): number {
-  if (!scope.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") return 1;
+  if (!scope.crossOriginIsolated || typeof SharedArrayBuffer === "undefined" || appleMobile) return 1;
   return Math.max(1, Math.min(navigator.hardwareConcurrency || 1, 8));
 }
 
@@ -56,11 +65,12 @@ async function compile(url: string): Promise<WebAssembly.Module> {
   }
 }
 
-const ready = (async () => {
-  const threads = threadCount();
+/** Loads the engine with `threads` threads; the threaded build may fail where shared memory runs short. */
+async function load(threads: number) {
   const module = await compile(threads > 1 ? threadedUrl : singleUrl);
   // The threaded module imports its memory: shared, so helpers can join.
-  const shared = threads > 1 ? new WebAssembly.Memory({ initial: 1024, maximum: 16384, shared: true }) : null;
+  // 256 MB is room enough for the 64 MB hash table and the helpers' stacks.
+  const shared = threads > 1 ? new WebAssembly.Memory({ initial: 1024, maximum: 4096, shared: true }) : null;
   const instance = await WebAssembly.instantiate(module, {
     env: {
       ...(shared ? { memory: shared } : {}),
@@ -90,6 +100,25 @@ const ready = (async () => {
   }
   engine.tg_new(size, 0);
   engine.tg_set_threads(threads);
+  return threads;
+}
+
+const ready = (async () => {
+  let threads = threadCount();
+  try {
+    threads = await load(threads);
+  } catch (error) {
+    if (threads === 1) {
+      post({ kind: "fatal", message: String(error instanceof Error ? error.message : error) });
+      throw error;
+    }
+    try {
+      threads = await load(1);
+    } catch (again) {
+      post({ kind: "fatal", message: String(again instanceof Error ? again.message : again) });
+      throw again;
+    }
+  }
   post({ kind: "ready", mate: engine.tg_mate(), scale: engine.tg_scale(), threads });
 })();
 

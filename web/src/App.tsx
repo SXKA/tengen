@@ -106,6 +106,8 @@ export function App() {
   settingsRef.current = settings;
   // Bumped by every new game so late answers from an older game are ignored.
   const generation = useRef(0);
+  /** Why the engine cannot run here, once it has given up. */
+  const [engineError, setEngineError] = useState<string | null>(null);
   const searching = useRef<{ color: StoneColor; ply: number }>({ color: "black", ply: 0 });
   const watch = useMatch(engine, settings.engines);
   const watching = settings.mode === "watch";
@@ -155,6 +157,7 @@ export function App() {
       else startGame(size, rule);
     };
     client.onInfo = (i) => setInfo({ info: i, ...searching.current });
+    client.onFatal = (reason) => setEngineError(reason);
     return () => client.dispose();
   }, [startGame, resumeGame]);
 
@@ -397,7 +400,14 @@ export function App() {
             ))}
           </div>
 
-          {watching ? (
+          {engineError !== null && (
+            <section className="status" role="alert">
+              <h1 className="status-text">{t.engineFailed}</h1>
+              <p className="status-note">{t.engineFailedNote(engineError)}</p>
+            </section>
+          )}
+
+          {engineError !== null ? null : watching ? (
             <WatchPanel
               t={t}
               state={watch.state}

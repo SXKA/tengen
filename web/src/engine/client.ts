@@ -11,6 +11,9 @@ type Pending = {
 const GRACE_MS = 15_000;
 /** Time for loading the engine and answering a first request. */
 const FIRST_MS = 45_000;
+/** Workers replaced within RECOVERY_WINDOW_MS before giving up. */
+const MAX_RECOVERIES = 2;
+const RECOVERY_WINDOW_MS = 120_000;
 
 export class EngineClient {
   private worker!: Worker;
@@ -25,7 +28,11 @@ export class EngineClient {
   onInfo: (info: SearchInfo) => void = () => {};
   /** Called when a worker is ready; `recovered` after one stopped answering. */
   onReady: (recovered: boolean) => void = () => {};
+  /** Called when the engine cannot run in this browser, with the reason. */
+  onFatal: (reason: string) => void = () => {};
   private recovering = false;
+  private recoveries: number[] = [];
+  private failed = false;
 
   constructor() {
     this.start();
@@ -49,6 +56,9 @@ export class EngineClient {
           return;
         case "info":
           this.onInfo(message.info);
+          return;
+        case "fatal":
+          this.fail(message.message);
           return;
         case "snapshot":
           this.settle(message.id, message.snapshot);
@@ -85,6 +95,7 @@ export class EngineClient {
    */
   private send<T extends Snapshot | Packed | null>(request: Request, ms = GRACE_MS): Promise<T> {
     const id = this.nextId++;
+    if (this.failed) return Promise.reject(new Error("the engine cannot run in this browser"));
     return new Promise<T>((resolve, reject) => {
       const limit = this.loaded ? ms : ms + FIRST_MS;
       const timer = window.setTimeout(() => this.recover("the engine stopped responding"), limit);
@@ -95,10 +106,25 @@ export class EngineClient {
 
   /** Rejects what is pending and starts a new worker, which says when it is ready. */
   private recover(reason: string) {
+    const now = Date.now();
+    this.recoveries = this.recoveries.filter((t) => now - t < RECOVERY_WINDOW_MS);
+    if (this.recoveries.length >= MAX_RECOVERIES) {
+      // New workers fail as well: starting more only uses up memory.
+      this.fail(reason);
+      return;
+    }
+    this.recoveries.push(now);
     this.recovering = true;
     this.worker.terminate();
     this.rejectAll(reason);
     this.start();
+  }
+
+  private fail(reason: string) {
+    this.failed = true;
+    this.worker.terminate();
+    this.rejectAll(reason);
+    this.onFatal(reason);
   }
 
   private rejectAll(reason: string) {
@@ -132,6 +158,7 @@ export class EngineClient {
    * the worker. Pending requests are rejected.
    */
   restart() {
+    if (this.failed) return;
     this.recovering = false;
     this.worker.terminate();
     this.rejectAll("engine restarted");

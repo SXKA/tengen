@@ -72,21 +72,23 @@ export const ENGINES: Engine[] = [
   },
 ];
 
-export const engine = (id: EngineId): Engine => ENGINES.find((e) => e.id === id) ?? ENGINES[0];
-
-/** Why `id` cannot play this game, or null when it can. */
-export function unavailable(id: EngineId, rule: RuleId, size: number): "rule" | "size" | "isolation" | null {
-  const e = engine(id);
-  if (!e.rules.includes(rule)) return "rule";
-  if (size > e.maxSize) return "size";
-  if (e.threaded && !(typeof crossOriginIsolated !== "undefined" && crossOriginIsolated)) return "isolation";
-  return null;
-}
-
 /** iPhones and iPads, iPads included when they say they are Macs. */
 const appleMobile = () =>
   /iPhone|iPad|iPod/.test(navigator.userAgent) ||
   (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+export const engine = (id: EngineId): Engine => ENGINES.find((e) => e.id === id) ?? ENGINES[0];
+
+/** Why `id` cannot play this game, or null when it can. */
+export function unavailable(id: EngineId, rule: RuleId, size: number): "rule" | "size" | "isolation" | "mobile" | null {
+  const e = engine(id);
+  if (!e.rules.includes(rule)) return "rule";
+  if (size > e.maxSize) return "size";
+  if (e.threaded && !(typeof crossOriginIsolated !== "undefined" && crossOriginIsolated)) return "isolation";
+  // Shared memory runs short there, and SlowRenju cannot do without threads.
+  if (e.threaded && appleMobile()) return "mobile";
+  return null;
+}
 
 /**
  * Search threads for engines that can use several. One on iPhones and

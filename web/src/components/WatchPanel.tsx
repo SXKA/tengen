@@ -194,7 +194,9 @@ export function WatchPanel({
                     ? t.notForSize
                     : problem === "isolation"
                       ? t.notIsolated
-                      : t.engineNotes[engine(chosen).id]}
+                      : problem === "mobile"
+                        ? t.notMobile
+                        : t.engineNotes[engine(chosen).id]}
               </p>
             </fieldset>
           );

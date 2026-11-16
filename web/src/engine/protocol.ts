@@ -58,6 +58,8 @@ export type Request =
 
 export type Response =
   | { kind: "ready"; mate: number; scale: number; threads: number }
+  /** The engine could not start in this browser. */
+  | { kind: "fatal"; message: string }
   | { kind: "info"; info: SearchInfo }
   | { kind: "snapshot"; id: number; snapshot: Snapshot }
   | { kind: "move"; id: number; move: Packed | null }
