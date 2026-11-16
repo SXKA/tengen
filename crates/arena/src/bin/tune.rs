@@ -20,12 +20,21 @@
 //! for the opponent, so that a softmax over the candidate moves predicts the
 //! move played. Run it after `fit`, which resets them to their defaults.
 //! `init` writes the untuned factored defaults.
+//!
+//! `label` asks a stronger Piskvork brain (`--brain`, e.g. Rapfi, searching
+//! `--nodes` nodes) to evaluate every position `fit` would train on, and
+//! writes each game back with the evaluations after a `;`. `fit` then
+//! trains on those positions only, toward the teacher's win probability
+//! mixed with the game result (`--lambda` is the teacher's share). The
+//! teacher's evaluation is turned into a probability with the scale that
+//! best predicts the game results.
 
 use std::io::{BufRead, BufWriter, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use tengen_arena::brain::Brain;
 use tengen_arena::openings::{Rng, opening};
 use tengen_arena::record::{Outcome, parse_game, write_game};
 use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THREAT_COUNT, Weights};
@@ -37,7 +46,8 @@ use tengen_engine::{Board, Color, Engine, Limits, Rule};
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] [--rule freestyle]
                        --out FILE [--weights FILE]
-  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] --out FILE
+  tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
+  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
@@ -77,11 +87,18 @@ fn main() {
                 out,
             });
         }
+        Some("label") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let brain = flag("--brain").unwrap_or_else(|| fail("--brain is required"));
+            let threads = number("--threads", threads() as u64) as usize;
+            label(&data, &brain, number("--nodes", 20_000), threads, &out);
+        }
         Some("fit") => {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 2000) as usize;
             let per_code = args.iter().any(|a| a == "--per-code");
-            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, per_code);
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, per_code, lambda);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-policy") => {
@@ -197,6 +214,8 @@ struct Sample {
     pattern: [i32; Pattern::COUNT],
     pattern4: [i32; Pattern4::COUNT],
     result: f64,
+    /// The teacher's evaluation for the side to move, from `label`.
+    teacher: Option<f64>,
 }
 
 /// Whether the static evaluation is meant to judge this position: the side
@@ -210,6 +229,136 @@ fn is_quiet(board: &Board) -> bool {
 
 /// Node budget of the shallow search that filters out tactical positions.
 const FILTER_NODES: u64 = 20_000;
+
+/// Why a position is not trained on.
+enum Skip {
+    /// Near the start or end of the game, or not quiet.
+    Excluded,
+    /// A shallow search finds a forced win.
+    Tactical,
+}
+
+/// Whether the evaluation is trained on the position after move `ply` (from
+/// 0) of a game of `len` moves. The filter search is capped: a few
+/// positions with many fours on both sides make the threat search explode,
+/// and those are not quiet anyway.
+fn trainable(engine: &mut Engine, board: &Board, ply: usize, len: usize) -> Result<(), Skip> {
+    if ply < 3 || ply + 4 >= len || !is_quiet(board) {
+        return Err(Skip::Excluded);
+    }
+    let limits = Limits {
+        depth: Some(1),
+        nodes: Some(FILTER_NODES),
+        ..Limits::default()
+    };
+    let result = engine.search(board, &limits, |_| {});
+    if result.value.abs() >= MATE_BOUND || result.nodes >= FILTER_NODES {
+        return Err(Skip::Tactical);
+    }
+    Ok(())
+}
+
+/// The evaluation in a brain's last search report: Rapfi's `Eval 123` or
+/// Tengen's `ev 123`. `None` for a mate or no report.
+fn reported_value(messages: &[String]) -> Option<f64> {
+    for line in messages.iter().rev() {
+        let mut words = line.split_whitespace();
+        while let Some(word) = words.next() {
+            if word == "Eval" || word == "ev" {
+                let value = words.next()?.trim_start_matches('+');
+                return value.parse::<f64>().ok();
+            }
+            if word == "mate" {
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Append the teacher's evaluation of every trainable position to each
+/// game: `GAME ; PLY:VALUE ...`, values for the side to move.
+fn label(path: &str, command: &str, nodes: u64, threads: usize, out: &str) {
+    let lines = read_lines(&[path]);
+    let file = std::fs::File::create(out).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+    let out = Mutex::new(BufWriter::new(file));
+    let next = AtomicUsize::new(0);
+    let (done, labelled) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let started = Instant::now();
+    let spawn = |game: &tengen_arena::record::Game| {
+        let mut brain =
+            Brain::spawn(command, game.size, game.rule, 60_000, 0).unwrap_or_else(|e| fail(&format!("{command}: {e}")));
+        brain.send(&format!("INFO max_node {nodes}"));
+        brain.send("INFO show_detail 1");
+        brain
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let mut engine = Engine::new(8);
+                let mut teacher: Option<(usize, Rule, Brain)> = None;
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= lines.len() {
+                        break;
+                    }
+                    let line = lines[index].split(';').next().unwrap_or("").trim_end();
+                    let Some(game) = parse_game(line) else { continue };
+                    if !matches!(&teacher, Some((size, rule, _)) if *size == game.size && *rule == game.rule) {
+                        teacher = Some((game.size, game.rule, spawn(&game)));
+                    }
+                    let mut text = format!("{line} ;");
+                    let mut board = game.board();
+                    for (ply, &pos) in game.moves.iter().enumerate() {
+                        board.play(pos);
+                        if trainable(&mut engine, &board, ply, game.moves.len()).is_err() {
+                            continue;
+                        }
+                        // Rapfi can still be finishing its last search when
+                        // the answer arrives, and then misreads the next
+                        // BOARD; a moment's pause avoids it, and a failed
+                        // position is retried once with a fresh process.
+                        for attempt in 0..2 {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                            let brain = &mut teacher.as_mut().expect("teacher").2;
+                            brain.take_messages();
+                            match brain.board(&board, board.side_to_move()) {
+                                Ok(_) => {
+                                    if let Some(v) = reported_value(&brain.take_messages()) {
+                                        text.push_str(&format!(" {ply}:{v:.0}"));
+                                        labelled.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    break;
+                                }
+                                Err(e) => {
+                                    if attempt == 1 {
+                                        eprintln!("game {index}, move {}: {e}", ply + 1);
+                                    }
+                                    teacher = Some((game.size, game.rule, spawn(&game)));
+                                }
+                            }
+                        }
+                    }
+                    let mut out = out.lock().unwrap();
+                    let _ = writeln!(out, "{text}");
+                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if finished.is_multiple_of(100) || finished == lines.len() {
+                        let _ = out.flush();
+                        eprintln!(
+                            "{finished}/{} games, {} positions ({:.0}s)",
+                            lines.len(),
+                            labelled.load(Ordering::Relaxed),
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+                if let Some((_, _, mut brain)) = teacher {
+                    brain.quit();
+                }
+            });
+        }
+    });
+}
 
 /// Threads for loading and fitting.
 fn threads() -> usize {
@@ -296,24 +445,35 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
             return (index, samples);
         };
         let (outcome, moves) = (game.outcome, &game.moves);
-        // The filter search is capped: a few positions with many fours on
-        // both sides make the threat search explode, and those are not
-        // quiet anyway.
-        let limits = Limits {
-            depth: Some(1),
-            nodes: Some(FILTER_NODES),
-            ..Limits::default()
-        };
+        // Labelled games train only on the positions the teacher evaluated.
+        let labels: Option<std::collections::HashMap<usize, f64>> = line.split_once(';').map(|(_, rest)| {
+            rest.split_whitespace()
+                .filter_map(|w| {
+                    let (ply, v) = w.split_once(':')?;
+                    Some((ply.parse().ok()?, v.parse().ok()?))
+                })
+                .collect()
+        });
         let mut board = game.board();
         for (ply, &pos) in moves.iter().enumerate() {
             board.play(pos);
-            if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
-                continue;
-            }
-            let result = ENGINE.with(|e| e.borrow_mut().search(&board, &limits, |_| {}));
-            if result.value.abs() >= MATE_BOUND || result.nodes >= FILTER_NODES {
-                tactical.fetch_add(1, Ordering::Relaxed);
-                continue;
+            let teacher = match &labels {
+                Some(labels) => match labels.get(&ply) {
+                    Some(&v) => Some(v),
+                    None => continue,
+                },
+                None => None,
+            };
+            // Labelled positions already passed the filter.
+            if teacher.is_none() {
+                match ENGINE.with(|e| trainable(&mut e.borrow_mut(), &board, ply, moves.len())) {
+                    Ok(()) => {}
+                    Err(Skip::Excluded) => continue,
+                    Err(Skip::Tactical) => {
+                        tactical.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
             }
             let black = outcome.black_score();
             let result = if board.side_to_move() == Color::Black {
@@ -334,6 +494,7 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
                 pattern,
                 pattern4,
                 result,
+                teacher,
             });
         }
         (index, samples)
@@ -471,13 +632,55 @@ fn optimize(
     p
 }
 
+/// Turn the teacher's evaluations into win probabilities and mix them into
+/// the targets: `lambda * teacher + (1 - lambda) * result`. The scale is
+/// the one with which the teacher best predicts the training games' results.
+fn apply_teacher(train: &mut [Sample], valid: &mut [Sample], lambda: f64) {
+    let labelled: Vec<(f64, f64)> = train.iter().filter_map(|s| Some((s.teacher?, s.result))).collect();
+    if labelled.is_empty() {
+        return;
+    }
+    let error = |log_scale: f64| -> f64 {
+        let scale = log_scale.exp();
+        labelled
+            .iter()
+            .map(|&(v, r)| (r - 1.0 / (1.0 + (-v / scale).exp())).powi(2))
+            .sum::<f64>()
+            / labelled.len() as f64
+    };
+    // Golden-section search over the log of the scale.
+    let (mut lo, mut hi) = (10f64.ln(), 10_000f64.ln());
+    let g = (5f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..60 {
+        let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+        if error(a) < error(b) {
+            hi = b;
+        } else {
+            lo = a;
+        }
+    }
+    let scale = ((lo + hi) / 2.0).exp();
+    eprintln!(
+        "teacher: {} labelled positions, scale {scale:.0}, result error {:.6}, lambda {lambda}",
+        labelled.len(),
+        error(scale.ln())
+    );
+    for s in train.iter_mut().chain(valid.iter_mut()) {
+        if let Some(v) = s.teacher {
+            let p = 1.0 / (1.0 + (-v / scale).exp());
+            s.result = lambda * p + (1.0 - lambda) * s.result;
+        }
+    }
+}
+
 /// Fit the factored model and, with `per_code`, the per-code tables, keeping
 /// whichever predicts the held-out games better.
-fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
-    let (train, valid) = load(paths);
+fn fit(paths: &[&str], epochs: usize, per_code: bool, lambda: f64) -> Weights {
+    let (mut train, mut valid) = load(paths);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
     }
+    apply_teacher(&mut train, &mut valid, lambda);
 
     let factored = FactoredModel;
     let d = &DEFAULT_FACTORED;
