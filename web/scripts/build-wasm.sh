@@ -2,22 +2,24 @@
 # Build the engine for the browser: src/engine/tengen.wasm (one thread) and
 # src/engine/tengen-mt.wasm (shared memory, several threads).
 #
-# Installs a minimal Rust toolchain when cargo is missing (as on Vercel's
-# build machines). The threaded build compiles the standard library with
-# atomics, which needs the rust-src component.
+# Builds with the same Rust release as CI, installed through rustup when
+# needed. Vercel's build machines come with an older cargo that cannot
+# compile the engine, so rustup is installed next to it and takes
+# precedence. The threaded build compiles the standard library with atomics,
+# which needs the rust-src component.
 set -eu
 cd "$(dirname "$0")/.."
 
-if ! command -v cargo >/dev/null 2>&1; then
-  if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+RUST_VERSION=1.97.0
+if ! command -v rustup >/dev/null 2>&1; then
+  if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
   fi
   PATH="$HOME/.cargo/bin:$PATH"
 fi
-if command -v rustup >/dev/null 2>&1; then
-  rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-  rustup component add rust-src >/dev/null 2>&1 || true
-fi
+rustup toolchain install "$RUST_VERSION" --profile minimal \
+  --target wasm32-unknown-unknown --component rust-src >/dev/null
+export RUSTUP_TOOLCHAIN="$RUST_VERSION"
 
 target=../target
 cargo build --manifest-path ../Cargo.toml -p tengen-wasm --release --target wasm32-unknown-unknown ${TENGEN_CARGO_FLAGS:-}
