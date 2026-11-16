@@ -28,7 +28,7 @@ use tengen_engine::{Board, Color, Engine, Limits};
 
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] --out FILE [--weights FILE]
-  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] --out FILE
+  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--factored] --out FILE
   tengen-tune init --out FILE";
 
 fn main() {
@@ -66,7 +66,8 @@ fn main() {
         Some("fit") => {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 2000) as usize;
-            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs);
+            let factored_only = args.iter().any(|a| a == "--factored");
+            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, factored_only);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("init") => {
@@ -187,10 +188,17 @@ fn is_quiet(board: &Board) -> bool {
 }
 
 /// Training and validation positions (every tenth game is held out).
+///
+/// Positions where a shallow search already finds a forced win are left
+/// out: the threat search settles those, so the static evaluation should not
+/// be trained to anticipate them.
 fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
     let tables = Tables::get();
     let (mut train, mut valid) = (Vec::new(), Vec::new());
     let mut games = 0;
+    let mut tactical = 0;
+    let mut engine = Engine::new(8);
+    let limits = Limits::depth(1);
     for path in paths {
         let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
         for line in std::io::BufReader::new(file).lines() {
@@ -202,33 +210,38 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
             let mut board = Board::new(size);
             for (ply, &pos) in moves.iter().enumerate() {
                 board.play(pos);
-                if ply >= 3 && ply + 4 < moves.len() && is_quiet(&board) {
-                    let black = outcome.black_score();
-                    let result = if board.side_to_move() == Color::Black {
-                        black
-                    } else {
-                        1.0 - black
-                    };
-                    let features = Features::of(&board);
-                    let (mut pattern, mut pattern4) = ([0; Pattern::COUNT], [0; Pattern4::COUNT]);
-                    for &(code, n) in &features.pcode {
-                        for p in tables.patterns(code) {
-                            pattern[p as usize] += n;
-                        }
-                        pattern4[tables.pattern4(code) as usize] += n;
-                    }
-                    target.push(Sample {
-                        features,
-                        pattern,
-                        pattern4,
-                        result,
-                    });
+                if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
+                    continue;
                 }
+                if engine.search(&board, &limits, |_| {}).value.abs() >= MATE_BOUND {
+                    tactical += 1;
+                    continue;
+                }
+                let black = outcome.black_score();
+                let result = if board.side_to_move() == Color::Black {
+                    black
+                } else {
+                    1.0 - black
+                };
+                let features = Features::of(&board);
+                let (mut pattern, mut pattern4) = ([0; Pattern::COUNT], [0; Pattern4::COUNT]);
+                for &(code, n) in &features.pcode {
+                    for p in tables.patterns(code) {
+                        pattern[p as usize] += n;
+                    }
+                    pattern4[tables.pattern4(code) as usize] += n;
+                }
+                target.push(Sample {
+                    features,
+                    pattern,
+                    pattern4,
+                    result,
+                });
             }
         }
     }
     eprintln!(
-        "{} training and {} validation positions from {games} games",
+        "{} training and {} validation positions from {games} games ({tactical} with forced wins skipped)",
         train.len(),
         valid.len()
     );
@@ -334,7 +347,7 @@ fn optimize(model: &dyn Model, samples: &[Sample], start: &[f64], prior: &[f64],
 
 /// Fit the factored model, then the per-code tables, and keep whichever
 /// predicts the held-out games better.
-fn fit(paths: &[&str], epochs: usize) -> Weights {
+fn fit(paths: &[&str], epochs: usize, factored_only: bool) -> Weights {
     let (train, valid) = load(paths);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
@@ -384,7 +397,8 @@ fn fit(paths: &[&str], epochs: usize) -> Weights {
         tuned_factored.pattern, tuned_factored.pattern4
     );
 
-    for l2 in [1e-7, 1e-8, 1e-9] {
+    let strengths: &[f64] = if factored_only { &[] } else { &[1e-7, 1e-8, 1e-9] };
+    for &l2 in strengths {
         let p = optimize(&codes, &train, &prior, &prior, l2, epochs);
         let rounded = round(&p);
         let mut threat = rounded[PCODE_COUNT..].to_vec();
