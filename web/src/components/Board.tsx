@@ -26,6 +26,8 @@ interface Props {
   /** Cells the side to move may not play (renju, Black). */
   forbidden: Packed[];
   threats: { black: Int8Array; white: Int8Array } | null;
+  /** Whether stones show their move numbers. */
+  numbers?: boolean;
   label: string;
   onPlace: (move: Packed) => void;
   /** Told when a first tap marks a point that a second tap would place. */
@@ -57,6 +59,7 @@ export function Board({
   ghosts,
   forbidden,
   threats,
+  numbers = false,
   label,
   onPlace,
   onPending,
@@ -258,11 +261,25 @@ export function Board({
           >
             <circle cx={at(x) + 1.6} cy={at(y) + 2.6} r={C * 0.45} className="stone-shadow" filter="url(#shadow)" />
             <circle cx={at(x)} cy={at(y)} r={C * 0.465} fill={`url(#${color})`} />
+            {numbers && (
+              <text
+                x={at(x)}
+                y={at(y)}
+                dominantBaseline="central"
+                textAnchor="middle"
+                className={`stone-number ${i % 2 === 0 ? "on-black" : "on-white"}${i === moves.length - 1 ? " latest" : ""}`}
+                style={{ fontSize: i + 1 >= 100 ? C * 0.36 : C * 0.44 }}
+              >
+                {i + 1}
+              </text>
+            )}
           </g>
         );
       })}
 
-      {last !== null && <circle cx={at(unpack(last).x)} cy={at(unpack(last).y)} r={C * 0.11} className="last-move" />}
+      {last !== null && !numbers && (
+        <circle cx={at(unpack(last).x)} cy={at(unpack(last).y)} r={C * 0.11} className="last-move" />
+      )}
 
       {fiveEnds && (
         <line

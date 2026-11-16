@@ -60,14 +60,13 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
-      - run: cargo build --release --locked -p tengen-piskvork -p tengen-bridge --target ${{ matrix.target }}
+      - run: cargo build --release --locked -p tengen-piskvork --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
           name="tengen-${TAG}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/pbrain-tengen${{ matrix.exe }}" "$name/"
-          cp "target/${{ matrix.target }}/release/tengen-bridge${{ matrix.exe }}" "$name/"
           cp LICENSE README.md "$name/"
           if [ "${{ matrix.exe }}" = ".exe" ]; then
             7z a "$name.zip" "$name" >/dev/null

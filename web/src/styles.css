@@ -244,6 +244,31 @@ a:hover {
   stroke-width: 2;
 }
 
+.stone-number {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+  pointer-events: none;
+}
+
+.stone-number.on-black {
+  fill: var(--paper);
+}
+
+.stone-number.on-white {
+  fill: var(--ink);
+}
+
+/* The newest stone's number takes the seal red the last-move dot uses. */
+.stone-number.latest {
+  fill: var(--seal);
+}
+
+.stone-number.on-black.latest {
+  fill: #ff7a5c;
+}
+
 .ghost {
   opacity: 0.55;
   pointer-events: none;
@@ -532,6 +557,104 @@ button.primary:hover {
   display: block;
   color: var(--mist);
   font-size: 13px;
+}
+
+/* Mode switch: playing the engine, or watching engines play */
+
+.modes {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--indigo-line);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 3px;
+}
+
+.modes button {
+  border: none;
+  padding: 6px 14px;
+}
+
+.modes button[aria-pressed="true"] {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.modes button[aria-pressed="true"]:hover {
+  background: var(--paper);
+}
+
+/* Engine matches */
+
+.sides {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sides th,
+.sides td {
+  padding: 5px 0;
+  text-align: left;
+  font-weight: 500;
+}
+
+.sides th {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sides td {
+  white-space: nowrap;
+  padding-left: 16px;
+}
+
+/* The side thinking now is in the kaya color the busy status uses. */
+.sides tr.thinking th {
+  color: var(--kaya-light);
+}
+
+.pick {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pick legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mist);
+  font-size: 13px;
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.pick select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--paper);
+  background: var(--indigo-deep);
+  border: 1px solid var(--indigo-line);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.pick select:first-of-type {
+  flex: 1 1 10em;
+}
+
+.pick select:disabled {
+  opacity: 0.6;
+}
+
+.pick .note {
+  flex-basis: 100%;
 }
 
 /* Game record */

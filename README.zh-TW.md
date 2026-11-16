@@ -11,7 +11,11 @@ Tengen 是用 Rust 寫的五子棋與連珠引擎。它可以編譯成 WebAssemb
 
 ## 開始下棋
 
-- **瀏覽器**：打開儲存庫 About 欄位裡的網站連結。引擎在你的瀏覽器（Web Worker）裡運算，不會把棋局送到伺服器。
+- **瀏覽器**：打開 [tengen-bice.vercel.app](https://tengen-bice.vercel.app)。引擎在你的瀏覽器（Web Worker）裡運算，不會把棋局送到伺服器。
+- **看引擎對戰**：網站的「觀戰」模式讓兩個引擎對下，每個引擎都在你瀏覽器裡各自的 Worker 執行：Tengen、
+  [Rapfi](https://github.com/dhbloo/rapfi)（可用 NNUE，選用時才下載；或傳統估值）、郝天一的
+  [SlowRenju](https://github.com/wind23/SlowRenju)，以及 [Piskvork](https://github.com/plastovicka/Piskvork) 內建、
+  Petr Laštovička 的 Pela。兩種模式都可以在棋子上顯示手序。
 - **Piskvork 等 Gomocup 平台**：到 [Releases](https://github.com/SXKA/tengen/releases/latest) 下載對應系統的
   `pbrain-tengen`，加入成 brain 即可。支援 5×5 到 20×20 的棋盤，以及 Piskvork 協定的所有規則。
 
@@ -88,6 +92,10 @@ GitHub Actions 的 **SPRT** 工作流程會在分支與 `master` 之間跑同樣
 （`crates/engine/src/weights-規則.txt`，沒有就用自由規則的 `weights.txt`）。**Versus Rapfi** 工作流程會編譯
 [Rapfi](https://github.com/dhbloo/rapfi)，分別用它的 NNUE 和傳統估值跟 Tengen 對下固定盤數，量出和最強開源引擎的差距。
 
+網站上的其他引擎由兩個手動工作流程編譯，結果推到一個分支等待 pull request：**Rapfi WASM** 用 Emscripten 編譯
+Rapfi；**Classic engines WASM** 用 `engines/` 裡的相容層編譯原本只支援 Windows 的 Pela 與 SlowRenju。這個相容層
+也能在本機測試：`sh engines/build.sh pela PISKVORK路徑 out native` 會產生講 Piskvork 協定的 `pbrain-pela`。
+
 ## 目錄結構
 
 | 路徑 | 內容 |
@@ -97,6 +105,8 @@ GitHub Actions 的 **SPRT** 工作流程會在分支與 `master` 之間跑同樣
 | `crates/arena` | `tengen-arena`（對戰與 SPRT）與 `tengen-tune`（自我對弈與調參） |
 | `crates/wasm` | WebAssembly 版本（單執行緒與多執行緒），提供純 C ABI |
 | `web` | 網頁版：React，引擎跑在 Web Worker |
+| `web/public/engines` | 觀戰用的其他引擎，由工作流程編譯，附來源說明 |
+| `engines` | Pela 與 SlowRenju 在 Windows 以外編譯所需：協定前端、相容層、修補腳本 |
 
 ## 致謝
 
@@ -105,3 +115,6 @@ Tengen 的棋型分類、估值結構與搜尋技巧參考了 dhbloo 等人開�
 ## 授權
 
 GPL-3.0-or-later，見 [LICENSE](LICENSE)。
+
+網站另外提供其他引擎的編譯版本，各依其授權：Rapfi（GPL-3.0）與 [rapfi-networks](https://github.com/dhbloo/rapfi-networks)
+的權重（CC0）、SlowRenju（GPL-3.0）、Pela（GPL）。`web/public/engines` 下每個資料夾都有 `NOTICE.md`，註明編譯所用的確切原始碼。
