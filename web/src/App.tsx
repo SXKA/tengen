@@ -83,12 +83,6 @@ type Phase = "loading" | "human" | "engine" | "hint" | "over";
 
 const sideToMove = (moves: Packed[]): StoneColor => (moves.length % 2 === 0 ? "black" : "white");
 
-function formatRate(nps: number): string {
-  if (nps >= 1e6) return `${(nps / 1e6).toFixed(1)}M`;
-  if (nps >= 1e3) return `${Math.round(nps / 1e3)}k`;
-  return `${Math.round(nps)}`;
-}
-
 export function App() {
   const [settings, setSettings] = useState(loadSettings);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -106,6 +100,11 @@ export function App() {
   settingsRef.current = settings;
   // Bumped by every new game so late answers from an older game are ignored.
   const generation = useRef(0);
+  // Game settings start open where there is room for them beside the board.
+  const setupRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (setupRef.current && window.matchMedia("(min-width: 901px)").matches) setupRef.current.open = true;
+  }, []);
   /** Why the engine cannot run here, once it has given up. */
   const [engineError, setEngineError] = useState<string | null>(null);
   const searching = useRef<{ color: StoneColor; ply: number }>({ color: "black", ply: 0 });
@@ -364,50 +363,43 @@ export function App() {
           </svg>
           <span className="wordmark">Tengen</span>
         </a>
-        <p className="tagline">{t.tagline}</p>
+        <div className="modes" role="group" aria-label={t.modes}>
+          {(["play", "watch"] as const).map((m) => (
+            <button key={m} aria-pressed={settings.mode === m} onClick={() => switchMode(m)}>
+              {m === "play" ? t.modePlay : t.modeWatch}
+            </button>
+          ))}
+        </div>
         <button className="link-button" onClick={() => update({ lang: settings.lang === "en" ? "zh" : "en" })}>
           {t.language}
         </button>
       </header>
 
       <main className="table">
-        <div className="board-area">
-          <WinBar black={blackChance} label={t.winChance} />
-          <div className="board-frame">
-            <Board
-              size={size}
-              moves={moves}
-              five={shown?.five ?? []}
-              human={settings.human}
-              interactive={!watching && phase === "human"}
-              ghosts={ghosts}
-              forbidden={forbidden}
-              threats={settings.threats && !over ? (shown?.threats ?? null) : null}
-              numbers={settings.numbers}
-              label={t.boardLabel(size)}
-              onPlace={place}
-              onPending={setTapPending}
-            />
-          </div>
+        <div className="board-frame">
+          <Board
+            size={size}
+            moves={moves}
+            five={shown?.five ?? []}
+            human={settings.human}
+            interactive={!watching && phase === "human"}
+            ghosts={ghosts}
+            forbidden={forbidden}
+            threats={settings.threats && !over ? (shown?.threats ?? null) : null}
+            numbers={settings.numbers}
+            label={t.boardLabel(size)}
+            onPlace={place}
+            onPending={setTapPending}
+          />
         </div>
 
         <aside className="panel">
-          <div className="modes" role="group" aria-label={t.modes}>
-            {(["play", "watch"] as const).map((m) => (
-              <button key={m} aria-pressed={settings.mode === m} onClick={() => switchMode(m)}>
-                {m === "play" ? t.modePlay : t.modeWatch}
-              </button>
-            ))}
-          </div>
-
-          {engineError !== null && (
+          {engineError !== null ? (
             <section className="status" role="alert">
               <h1 className="status-text">{t.engineFailed}</h1>
               <p className="status-note">{t.engineFailedNote(engineError)}</p>
             </section>
-          )}
-
-          {engineError !== null ? null : watching ? (
+          ) : watching ? (
             <WatchPanel
               t={t}
               state={watch.state}
@@ -418,6 +410,7 @@ export function App() {
                 ms: settings.ms,
                 randomOpening: settings.randomOpening,
               }}
+              chance={blackChance}
               onEngine={(side, id) => watchSetting({ engines: { ...settings.engines, [side]: id } })}
               onTime={(side, ms) => update({ ms: { ...settings.ms, [side]: ms } })}
               onStart={() =>
@@ -438,78 +431,79 @@ export function App() {
           ) : (
             <>
               <section className="status" aria-live="polite">
-                <h1 className={phase === "engine" || phase === "hint" ? "status-text busy" : "status-text"}>
-                  {status}
-                </h1>
-                <p className="status-note">
-                  {phase === "human" && tapPending
-                    ? t.tapAgain
-                    : phase === "human" && moves.length === 0
-                      ? t.firstMove
-                      : phase === "human" && forbidden.length > 0
-                        ? t.forbiddenNote(forbidden.length)
-                        : hint !== null && phase === "human"
-                          ? t.hintIs(name(hint))
-                          : lastMove}
-                </p>
-              </section>
-
-              <section className="readout" aria-label={t.winChance}>
-                <p className="chance">
-                  {finished
-                    ? t.fiveBy(colorName(finished))
-                    : result === 3
-                      ? t.draw
+                <div className="status-head">
+                  <h1 className={phase === "engine" || phase === "hint" ? "status-text busy" : "status-text"}>
+                    {status}
+                  </h1>
+                  <span className="chance">
+                    {finished
+                      ? ""
                       : winner !== null && mate !== null
                         ? t.mateFor(colorName(winner), Math.abs(mate))
-                        : blackChance !== null
+                        : blackChance !== null && result === 0
                           ? t.blackShare(Math.round(blackChance * 100))
-                          : " "}
-                </p>
-                <dl className="stats">
-                  <div>
-                    <dt>{t.depth}</dt>
-                    <dd>{info ? `${info.info.depth}/${info.info.seldepth}` : "–"}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.threads}</dt>
-                    <dd>{engine.current?.threads ?? 1}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.speed}</dt>
-                    <dd>
-                      {info ? formatRate((info.info.nodes / Math.max(info.info.elapsedMs, 1)) * 1000) : "–"}{" "}
-                      <span className="unit">{t.perSecond}</span>
-                    </dd>
-                  </div>
-                </dl>
-                <div
-                  className="line"
-                  onPointerEnter={() => setPreviewLine(true)}
-                  onPointerLeave={() => setPreviewLine(false)}
-                  onFocus={() => setPreviewLine(true)}
-                  onBlur={() => setPreviewLine(false)}
-                  tabIndex={pv.length > 0 ? 0 : -1}
-                  title={t.lineNote}
-                >
-                  <span className="line-label">{t.line}</span>
-                  <span className="line-moves">{pv.length > 0 ? pv.slice(0, 12).map(name).join(" ") : "–"}</span>
+                          : ""}
+                  </span>
                 </div>
+                <WinBar black={blackChance} label={t.winChance} />
+                <p className="status-note">
+                  {finished
+                    ? t.fiveBy(colorName(finished))
+                    : phase === "human" && tapPending
+                      ? t.tapAgain
+                      : phase === "human" && moves.length === 0
+                        ? t.firstMove
+                        : phase === "human" && forbidden.length > 0
+                          ? t.forbiddenNote(forbidden.length)
+                          : hint !== null && phase === "human"
+                            ? t.hintIs(name(hint))
+                            : lastMove}
+                </p>
+                {pv.length > 0 && phase !== "over" && (
+                  <p
+                    className="line"
+                    onPointerEnter={() => setPreviewLine(true)}
+                    onPointerLeave={() => setPreviewLine(false)}
+                    onFocus={() => setPreviewLine(true)}
+                    onBlur={() => setPreviewLine(false)}
+                    tabIndex={0}
+                    title={t.lineNote}
+                  >
+                    <span className="line-label">{t.line}</span> {pv.slice(0, 8).map(name).join(" ")}
+                  </p>
+                )}
               </section>
 
-              <section className="controls">
-                <div className="actions">
-                  <button className="primary" onClick={() => newGame()}>
-                    {t.newGame}
-                  </button>
-                  <button onClick={undo} disabled={!canUndo}>
-                    {t.undo}
-                  </button>
-                  <button onClick={askHint} disabled={phase !== "human"}>
-                    {t.hint}
-                  </button>
-                </div>
+              <div className="actions">
+                <button className="primary" onClick={() => newGame()}>
+                  {t.newGame}
+                </button>
+                <button onClick={undo} disabled={!canUndo}>
+                  {t.undo}
+                </button>
+                <button onClick={askHint} disabled={phase !== "human"}>
+                  {t.hint}
+                </button>
+              </div>
+            </>
+          )}
 
+          <details className="setup" ref={setupRef}>
+            <summary>
+              <span className="setup-title">{t.setup}</span>
+              <span className="setup-summary">
+                {watching
+                  ? t.watchSummary(t.rules[settings.rule].name, settings.size, settings.randomOpening)
+                  : t.playSummary(
+                      t.rules[settings.rule].name,
+                      settings.size,
+                      colorName(settings.human),
+                      t.levels[settings.level],
+                    )}
+              </span>
+            </summary>
+            <div className="setup-body">
+              {!watching && (
                 <fieldset className="choice">
                   <legend>{t.playAs}</legend>
                   {(["black", "white"] as const).map((c) => (
@@ -524,9 +518,9 @@ export function App() {
                       {colorName(c)}
                     </label>
                   ))}
-                  <p className="note">{t.blackMovesFirst}</p>
                 </fieldset>
-
+              )}
+              {!watching && (
                 <fieldset className="choice">
                   <legend>{t.strength}</legend>
                   {t.levels.map((label, i) => (
@@ -541,86 +535,71 @@ export function App() {
                     </label>
                   ))}
                 </fieldset>
-              </section>
-            </>
-          )}
-
-          <section className="controls">
-            <fieldset className="choice rules">
-              <legend>{t.rule}</legend>
-              {RULES.map((r) => (
-                <label key={r} className={settings.rule === r ? "selected" : ""}>
+              )}
+              <fieldset className="choice">
+                <legend>{t.rule}</legend>
+                {RULES.map((r) => (
+                  <label key={r} className={settings.rule === r ? "selected" : ""} title={t.rules[r].note}>
+                    <input
+                      type="radio"
+                      name="rule"
+                      checked={settings.rule === r}
+                      onChange={() => (watching ? watchSetting({ rule: r }) : newGame({ rule: r }))}
+                    />
+                    {t.rules[r].name}
+                  </label>
+                ))}
+                <p className="note">{t.rules[settings.rule].note}</p>
+              </fieldset>
+              <fieldset className="choice">
+                <legend>{t.board}</legend>
+                {SIZES.map((s) => (
+                  <label key={s} className={settings.size === s ? "selected" : ""}>
+                    <input
+                      type="radio"
+                      name="size"
+                      checked={settings.size === s}
+                      onChange={() => (watching ? watchSetting({ size: s }) : newGame({ size: s }))}
+                    />
+                    {s} × {s}
+                  </label>
+                ))}
+              </fieldset>
+              {watching && (
+                <label className="toggle">
                   <input
-                    type="radio"
-                    name="rule"
-                    checked={settings.rule === r}
-                    onChange={() => (watching ? watchSetting({ rule: r }) : newGame({ rule: r }))}
+                    type="checkbox"
+                    checked={settings.randomOpening}
+                    onChange={(e) => update({ randomOpening: e.target.checked })}
                   />
-                  {t.rules[r].name}
+                  <span>{t.randomOpening}</span>
                 </label>
-              ))}
-              <p className="note">{t.rules[settings.rule].note}</p>
-            </fieldset>
+              )}
+            </div>
+          </details>
 
-            <fieldset className="choice">
-              <legend>{t.board}</legend>
-              {SIZES.map((s) => (
-                <label key={s} className={settings.size === s ? "selected" : ""}>
-                  <input
-                    type="radio"
-                    name="size"
-                    checked={settings.size === s}
-                    onChange={() => (watching ? watchSetting({ size: s }) : newGame({ size: s }))}
-                  />
-                  {s} × {s}
-                </label>
-              ))}
-            </fieldset>
+          <div className="view" role="group" aria-label={t.view}>
+            <button
+              aria-pressed={settings.threats}
+              onClick={() => update({ threats: !settings.threats })}
+              title={t.showThreatsNote}
+            >
+              {t.threatsShort}
+            </button>
+            <button
+              aria-pressed={settings.numbers}
+              onClick={() => update({ numbers: !settings.numbers })}
+              title={t.showNumbersNote}
+            >
+              {t.numbersShort}
+            </button>
+          </div>
 
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={settings.threats}
-                onChange={(e) => update({ threats: e.target.checked })}
-              />
-              <span>
-                {t.showThreats}
-                <small>{t.showThreatsNote}</small>
-              </span>
-            </label>
-
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={settings.numbers}
-                onChange={(e) => update({ numbers: e.target.checked })}
-              />
-              <span>
-                {t.showNumbers}
-                <small>{t.showNumbersNote}</small>
-              </span>
-            </label>
-
-            {watching && (
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={settings.randomOpening}
-                  onChange={(e) => update({ randomOpening: e.target.checked })}
-                />
-                <span>
-                  {t.randomOpening}
-                  <small>{t.randomOpeningNote}</small>
-                </span>
-              </label>
-            )}
-          </section>
-
-          <section className="record">
-            <h2>{t.moves}</h2>
-            {moves.length === 0 ? (
-              <p className="note">{t.noMoves}</p>
-            ) : (
+          {moves.length > 0 && (
+            <section className="record">
+              <h2>
+                {t.moves} <span className="count">{moves.length}</span>
+              </h2>
               <ol className="kifu">
                 {moves.map((m, i) => (
                   <li key={i} className={i % 2 === 0 ? "by-black" : "by-white"}>
@@ -628,21 +607,15 @@ export function App() {
                   </li>
                 ))}
               </ol>
-            )}
-          </section>
+            </section>
+          )}
         </aside>
       </main>
 
       <footer className="colophon">
-        <p>
-          {t.footer}
-          {watching && <> {t.enginesCredit}</>}
-        </p>
-        <p>
-          {watching && <a href="https://github.com/SXKA/tengen/tree/master/web/public/engines">{t.engineSources}</a>}
-          <a href="https://github.com/SXKA/tengen">{t.source}</a>
-          <a href="https://github.com/SXKA/tengen/releases/latest">{t.download}</a>
-        </p>
+        <a href="https://github.com/SXKA/tengen">{t.source}</a>
+        <a href="https://github.com/SXKA/tengen/releases/latest">{t.download}</a>
+        {watching && <a href="https://github.com/SXKA/tengen/tree/master/web/public/engines">{t.engineSources}</a>}
       </footer>
     </div>
   );

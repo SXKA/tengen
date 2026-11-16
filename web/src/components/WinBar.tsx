@@ -4,9 +4,9 @@ interface Props {
   label: string;
 }
 
-/** Black's share of the win chance as a bar: Black fills from the bottom. */
+/** Black's share of the win chance as a bar, Black from the left; an empty track before any score. */
 export function WinBar({ black, label }: Props) {
-  const share = black ?? 0.5;
+  if (black === null) return <div className="winbar" aria-hidden="true" />;
   return (
     <div
       className="winbar"
@@ -14,10 +14,10 @@ export function WinBar({ black, label }: Props) {
       aria-label={label}
       aria-valuemin={0}
       aria-valuemax={100}
-      aria-valuenow={Math.round(share * 100)}
+      aria-valuenow={Math.round(black * 100)}
     >
-      <div className="winbar-black" style={{ flexGrow: share }} />
-      <div className="winbar-white" style={{ flexGrow: 1 - share }} />
+      <div className="winbar-black" style={{ flexGrow: black }} />
+      <div className="winbar-white" style={{ flexGrow: 1 - black }} />
     </div>
   );
 }
