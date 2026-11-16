@@ -1,75 +1,84 @@
-# Qt五子棋
-[![英文](https://img.shields.io/badge/語言-英文-red.svg)](https://github.com/SXKA/Qt-Gomoku/blob/master/README.md)
-[![繁體中文](https://img.shields.io/badge/語言-繁體中文-green.svg)](https://github.com/SXKA/Qt-Gomoku/blob/master/README.zh-TW.md)
+# Tengen
 
-無禁手規則
+[![CI](https://github.com/SXKA/tengen/actions/workflows/ci.yml/badge.svg)](https://github.com/SXKA/tengen/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/授權-GPLv3-blue.svg)](LICENSE)
+[![English](https://img.shields.io/badge/lang-English-red.svg)](README.md)
 
-詳細介紹：https://github.com/SXKA/Qt-Gomoku/wiki
+Tengen 是用 Rust 寫的自由規則（無禁手）五子棋引擎。它可以編譯成 WebAssembly 在瀏覽器裡下，也能以
+`pbrain-tengen` 的形式在 Piskvork 等 [Gomocup](https://gomocup.org/) 對戰平台上使用。
 
-可執行檔：https://github.com/SXKA/Qt-Gomoku/releases
-## 特色
-- 搜尋深度達到 12 ply
-- 主要變體搜尋 (PVS)
-- 衝四勝(VCF)搜尋
-- 同形表
-- 空著裁剪
-- Multi-Cut
-- 延伸
-# 使用方法
-Include src/search/engine.h to use search engine.
+天元是棋盤正中央的點，多數對局從這裡開始。
 
+## 開始下棋
 
-```C++
-// 建構一個引擎.
-Search::Engine engine;
+- **瀏覽器**：打開儲存庫 About 欄位裡的網站連結。引擎在你的瀏覽器（Web Worker）裡運算，不會把棋局送到伺服器。
+- **Piskvork 等 Gomocup 平台**：到 [Releases](https://github.com/SXKA/tengen/releases/latest) 下載對應系統的
+  `pbrain-tengen`，加入成 brain 即可。支援 15×15 與 20×20 棋盤、自由規則（五子或以上連線獲勝）。
 
-// 設定搜尋參數.
-Search::LIMIT_DEPTH = depth; // Extensions will not be limited.
-Search::MC_C = mc_c; // Multi-Cut number of cutoffs.
-Search::MC_M = mc_m; // Multi-Cut number of moves.
-Search::MC_R = mc_r; // Multi-Cut depth reduction.
-Search::VCF_DEPTH = vcf_depth;       // VCF depth.
+## 運作方式
 
-// 黑方落子
-engine.move({7, 7}, Black);
+設計參考頂尖的傳統五子棋引擎，特別是 [Rapfi](https://github.com/dhbloo/rapfi)，但不使用神經網路：
 
-// 搜尋白方最佳著法
-const auto bestMove = engine.bestMove(White);
+- **位元棋盤**：每種顏色、每個方向、每一條線各用一個位元遮罩表示，任一格周圍 9 格的窗口只需一次位移。
+- **棋型表**：2¹⁸ 項的查表把每個窗口歸類成 13 種單線棋型（活三、衝四等）。每個空格快取雙方四個方向的棋型、與順序無關的
+  組合編碼，以及組合類別（四三、雙三等）。落子時只更新那四條線上的格子。
+- **線性估值**：每個空格依組合編碼提供分數，再加上「雙方各有哪些先手」的威脅項。權重用自我對弈的勝負做邏輯迴歸擬合
+  （Texel tuning），是量出來的而不是猜的。
+- **搜尋**：迭代加深的主要變例搜尋（PVS）、期望窗口、無鎖同形表；能找出連續衝四勝（VCF）的威脅空間靜態搜尋；對活三的
+  防守點逐一試下驗證；強制應手延伸；反向無益剪枝、razoring、後期著法剪枝與縮減。原生版本以 Lazy SMP 使用所有 CPU 核心。
 
-// 確認最佳著法是合法的（Engine::bestMove回傳的move一定是合法的）
-const auto legal = Search::Engine::isLegal(bestMove);
+各部分的細節請看 [wiki](https://github.com/SXKA/tengen/wiki)。
 
-if (legal) {
-    // 白方落子.
-    engine.move(bestMove, white);
-}
+## 建置
 
-// 取得棋局狀態
-const auto status = engine.gameStatus(bestMove, White);
+需要 Rust 1.97 以上。
 
-// 根據狀態決定遊戲是否繼續
-switch (status) {
-    case Draw:
-        // 處理平局並不再使用此引擎
-        break;
-    case Undecided:
-        // 繼續遊戲
-        break;
-    case Win:
-        // 處理白勝並不再使用此引擎
-        break;
-}
-
-// 悔一步棋，請確定有棋可悔
-engine.undo(1);
+```sh
+cargo build --release -p tengen-piskvork   # 產生 target/release/pbrain-tengen
+cargo test --workspace --release
+target/release/pbrain-tengen bench         # 深度 7 的節點數與速度
 ```
-## 需求
-- Qt 6.5.2
-## 參考
-- Enhanced Forward Pruning (搜尋)
-- https://github.com/kimlongli/FiveChess (評估)
-- https://github.com/Kenny-ting/Chess-Game-2020 (介面)
-## 主介面
-![圖片](https://github.com/SXKA/Qt-Gomoku/blob/master/Qt-Gomoku/resource/picture/mainwindow.png)
-## 遊戲介面
-<div align=center><img src=https://github.com/SXKA/Qt-Gomoku/blob/master/Qt-Gomoku/resource/picture/gamewindow.png></div>
+
+網頁版需要 Node.js 22 與 `wasm32-unknown-unknown` 目標：
+
+```sh
+rustup target add wasm32-unknown-unknown
+cd web
+npm ci
+npm run wasm   # 產生 src/engine/tengen.wasm
+npm run dev
+```
+
+部署到 Vercel 時把專案根目錄設成 `web`，`vercel.json` 會在建置時安裝 Rust。
+
+## 驗證修改
+
+搜尋或估值的修改要能贏棋才會留下。`tengen-arena` 從隨機的均勢開局讓兩個 brain 對戰，每個開局交換先後各下一盤，
+並以序貫機率比檢定（SPRT）決定何時停止：
+
+```sh
+cargo build --release -p tengen-arena
+target/release/tengen-arena --new path/to/new/pbrain-tengen --base path/to/old/pbrain-tengen \
+    --games 4000 --turn-ms 100 --sprt 0,10
+```
+
+GitHub Actions 的 **SPRT** 工作流程會在分支與 `master` 之間跑同樣的檢定。**Tune** 工作流程用 `tengen-tune` 產生自我對弈
+棋譜、擬合新的估值權重，並檢定它是否比現有權重強。
+
+## 目錄結構
+
+| 路徑 | 內容 |
+| --- | --- |
+| `crates/engine` | 引擎函式庫：棋盤、棋型、估值、著法生成、搜尋 |
+| `crates/piskvork` | `pbrain-tengen`，Gomocup 協定介面 |
+| `crates/arena` | `tengen-arena`（對戰與 SPRT）與 `tengen-tune`（自我對弈與調參） |
+| `crates/wasm` | WebAssembly 版本，提供純 C ABI |
+| `web` | 網頁版：React，引擎跑在 Web Worker |
+
+## 致謝
+
+Tengen 的棋型分類、估值結構與搜尋技巧參考了 dhbloo 等人開發的 [Rapfi](https://github.com/dhbloo/rapfi)，程式碼為獨立實作。
+
+## 授權
+
+GPL-3.0-or-later，見 [LICENSE](LICENSE)。
