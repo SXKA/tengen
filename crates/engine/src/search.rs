@@ -868,6 +868,17 @@ impl<'a> Worker<'a> {
         if alpha >= beta {
             return alpha;
         }
+        // An open three of the opponent at the horizon: search the defences
+        // instead of standing pat in quiescence.
+        let depth = if depth <= 0
+            && opp_fives == 0
+            && board.p4_count(them, Pattern4::BFlex4) > 0
+            && ply < 2 * self.root_depth as usize
+        {
+            1
+        } else {
+            depth
+        };
         if depth <= 0 {
             return self.qsearch(alpha, beta, ply, 0);
         }
