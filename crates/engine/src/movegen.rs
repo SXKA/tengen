@@ -34,20 +34,11 @@ pub enum Gen {
     Moves { forced: bool },
 }
 
-/// Ordering bonus for what a move makes for the mover, by combination.
-const ATTACK: [i32; Pattern4::COUNT] = [0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
-/// Ordering bonus for what a move takes away from the opponent.
-const DEFEND: [i32; Pattern4::COUNT] = [0, 3, 2, 8, 10, 24, 36, 100, 12, 40, 300, 1500, 8000];
-
 /// Ordering score of `pos` for the side `us`: what it builds plus what it
-/// prevents, with combination bonuses dominating.
+/// prevents, from the move-ordering tables of the evaluation weights.
 #[inline]
 pub fn move_score(board: &Board, pos: Pos, us: Color, values: &CellValues) -> i32 {
-    let them = us.opponent();
-    ATTACK[board.p4(pos, us) as usize]
-        + DEFEND[board.p4(pos, them) as usize]
-        + values.value(board.pcode(pos, us))
-        + values.value(board.pcode(pos, them)) * 3 / 4
+    values.policy(board.pcode(pos, us), board.pcode(pos, us.opponent()))
 }
 
 /// Fill `moves` for the side to move and report what the position demands.

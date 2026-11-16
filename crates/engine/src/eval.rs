@@ -49,6 +49,35 @@ pub struct Weights {
     pub pcode: Vec<i32>,
     /// Threat term, indexed by [`threat_mask`].
     pub threat: Vec<i32>,
+    /// Move-ordering score of playing a cell, by the mover's pattern code
+    /// there (what the move builds).
+    pub policy_own: Vec<i32>,
+    /// Move-ordering score of playing a cell, by the opponent's pattern code
+    /// there (what the move takes away).
+    pub policy_opp: Vec<i32>,
+}
+
+/// Default move-ordering bonus for what a move makes, by combination.
+pub const DEFAULT_ATTACK: [i32; Pattern4::COUNT] = [0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
+/// Default move-ordering bonus for what a move prevents, by combination.
+pub const DEFAULT_DEFEND: [i32; Pattern4::COUNT] = [0, 3, 2, 8, 10, 24, 36, 100, 12, 40, 300, 1500, 8000];
+
+/// The default move-ordering tables for an evaluation table: a combination
+/// bonus plus the cell's value, three quarters of it for the opponent.
+pub fn default_policy(pcode: &[i32]) -> (Vec<i32>, Vec<i32>) {
+    let tables = Tables::get();
+    let p4 = |code: usize| tables.pattern4(code as PatternCode) as usize;
+    let own = pcode
+        .iter()
+        .enumerate()
+        .map(|(c, &v)| DEFAULT_ATTACK[p4(c)] + v)
+        .collect();
+    let opp = pcode
+        .iter()
+        .enumerate()
+        .map(|(c, &v)| DEFAULT_DEFEND[p4(c)] + v * 3 / 4)
+        .collect();
+    (own, opp)
 }
 
 /// The factored model that seeds the tables: per line pattern and per
@@ -119,10 +148,13 @@ impl Factored {
                 let lines: i32 = tables.patterns(code).iter().map(|&p| self.pattern[p as usize]).sum();
                 lines + self.pattern4[tables.pattern4(code) as usize]
             })
-            .collect();
+            .collect::<Vec<i32>>();
+        let (policy_own, policy_opp) = default_policy(&pcode);
         Weights {
             pcode,
             threat: self.threat.to_vec(),
+            policy_own,
+            policy_opp,
         }
     }
 }
@@ -136,10 +168,13 @@ impl Default for Weights {
 impl Weights {
     /// Parse the text form written by [`Weights`]'s `Display`: one line per
     /// table, a name followed by whitespace-separated integers. Lines
-    /// starting with `#` are comments.
+    /// starting with `#` are comments. Missing move-ordering tables get
+    /// their defaults.
     pub fn parse(text: &str) -> Result<Weights, String> {
         let mut pcode = None;
         let mut threat = None;
+        let mut policy_own = None;
+        let mut policy_opp = None;
         for line in text
             .lines()
             .map(str::trim)
@@ -153,6 +188,8 @@ impl Weights {
             let (slot, len) = match name {
                 "pcode" => (&mut pcode, PCODE_COUNT),
                 "threat" => (&mut threat, THREAT_COUNT),
+                "policy_own" => (&mut policy_own, PCODE_COUNT),
+                "policy_opp" => (&mut policy_opp, PCODE_COUNT),
                 _ => return Err(format!("unknown table {name}")),
             };
             if values.len() != len {
@@ -160,9 +197,13 @@ impl Weights {
             }
             *slot = Some(values);
         }
+        let pcode = pcode.ok_or("missing pcode table")?;
+        let (default_own, default_opp) = default_policy(&pcode);
         Ok(Weights {
-            pcode: pcode.ok_or("missing pcode table")?,
             threat: threat.ok_or("missing threat table")?,
+            policy_own: policy_own.unwrap_or(default_own),
+            policy_opp: policy_opp.unwrap_or(default_opp),
+            pcode,
         })
     }
 }
@@ -170,7 +211,12 @@ impl Weights {
 impl std::fmt::Display for Weights {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "# Tengen evaluation weights, written by tengen-tune.")?;
-        for (name, table) in [("pcode", &self.pcode), ("threat", &self.threat)] {
+        for (name, table) in [
+            ("pcode", &self.pcode),
+            ("threat", &self.threat),
+            ("policy_own", &self.policy_own),
+            ("policy_opp", &self.policy_opp),
+        ] {
             let values: Vec<String> = table.iter().map(i32::to_string).collect();
             writeln!(f, "{name} {}", values.join(" "))?;
         }
@@ -193,6 +239,8 @@ pub fn install(weights: &Weights) -> Result<(), String> {
 pub struct CellValues {
     values: Box<[i32; PCODE_COUNT]>,
     threat: Box<[i32; THREAT_COUNT]>,
+    policy_own: Box<[i32; PCODE_COUNT]>,
+    policy_opp: Box<[i32; PCODE_COUNT]>,
 }
 
 impl CellValues {
@@ -207,7 +255,16 @@ impl CellValues {
         CellValues {
             values: weights.pcode.clone().try_into().expect("pcode table size"),
             threat: weights.threat.clone().try_into().expect("threat table size"),
+            policy_own: weights.policy_own.clone().try_into().expect("policy table size"),
+            policy_opp: weights.policy_opp.clone().try_into().expect("policy table size"),
         }
+    }
+
+    /// Move-ordering score of a cell with the mover's code `own` and the
+    /// opponent's code `opp`.
+    #[inline]
+    pub fn policy(&self, own: PatternCode, opp: PatternCode) -> i32 {
+        self.policy_own[own as usize] + self.policy_opp[opp as usize]
     }
 
     /// Value of a cell with pattern code `code`.
@@ -328,6 +385,14 @@ mod tests {
         assert!(Weights::parse("pcode 1 2").is_err());
         assert!(Weights::parse("bogus 1").is_err());
         assert!(Weights::parse("threat 1").is_err());
+        // Move-ordering tables default when absent.
+        let text: String = weights
+            .to_string()
+            .lines()
+            .filter(|l| !l.starts_with("policy"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(Weights::parse(&text).unwrap(), weights);
     }
 
     #[test]
