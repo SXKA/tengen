@@ -20,6 +20,10 @@ on:
       turn_ms:
         description: Milliseconds per move
         default: "100"
+      sprt:
+        description: Stop early on an SPRT verdict (off plays every game, for an unbiased Elo estimate)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -55,6 +59,6 @@ jobs:
             --base base/target/release/pbrain-tengen \
             --games ${{ inputs.games }} \
             --turn-ms ${{ inputs.turn_ms }} \
-            --sprt ${{ inputs.elo0 }},${{ inputs.elo1 }} \
+            ${{ inputs.sprt && format('--sprt {0},{1}', inputs.elo0, inputs.elo1) || '' }} \
             --concurrency "$(nproc)" \
             --seed "${{ github.run_id }}" | tee -a "$GITHUB_STEP_SUMMARY"
