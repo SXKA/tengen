@@ -35,6 +35,8 @@ export class Match {
   /** The side thinking now, or null between moves and while loading. */
   onThinking: (side: Side | null) => void = () => {};
   onInfo: (side: Side, info: BrainInfo) => void = () => {};
+  /** The side whose engine is loading. */
+  onLoading: (side: Side) => void = () => {};
   onEnd: (end: MatchEnd) => void = () => {};
   private stopped = false;
   private paused = false;
@@ -65,6 +67,7 @@ export class Match {
     this.onSnapshot(snapshot);
 
     for (const side of ["black", "white"] as const) {
+      this.onLoading(side);
       try {
         await this.brains[side].start(size, rule);
       } catch (error) {
