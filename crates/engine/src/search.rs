@@ -126,8 +126,13 @@ impl Limits {
         }
         // Leave room for process and protocol overhead.
         let hard = (hard - 30.0).max(hard * 0.5).max(1.0);
+        // When the game clock could pay for a full turn on every remaining
+        // move, there is nothing to save time for: keep deepening until
+        // most of the turn is used. An unfinished iteration still counts
+        // when it finds a better move.
+        let ample = turn_ms > 0.0 && time_left_ms >= turn_ms * moves_left;
         Limits {
-            soft_ms: Some(hard * 0.4),
+            soft_ms: Some(hard * if ample { 0.9 } else { 0.4 }),
             hard_ms: Some(hard),
             ..Limits::default()
         }

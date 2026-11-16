@@ -603,7 +603,10 @@ mod tests {
         brain.apply_info("timeout_turn", "1000");
         let l = brain.limits(&board);
         assert!(l.hard_ms.unwrap() <= 1000.0 && l.hard_ms.unwrap() > 500.0);
+        // No game clock: most of the turn is used.
+        assert!(l.soft_ms.unwrap() > 800.0);
         brain.apply_info("time_left", "3000");
-        assert!(brain.limits(&board).hard_ms.unwrap() < 500.0);
+        let l = brain.limits(&board);
+        assert!(l.hard_ms.unwrap() < 500.0 && l.soft_ms.unwrap() < 0.5 * l.hard_ms.unwrap());
     }
 }
