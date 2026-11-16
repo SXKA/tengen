@@ -6,7 +6,8 @@ page instead calls piskvork_command() with one command at a time and waits
 for the answer, so this turns the loop's body into that function and thinks
 in the calling thread; SlowRenju's own timer thread, which ends the search,
 stays a thread. It also starts every BOARD from an empty board, as the
-protocol says, and fixes the MSVC-only spellings.
+protocol says, makes the hash table fit a browser, and fixes the MSVC-only
+spellings.
 
 Usage: python3 patch.py DIRECTORY
 
@@ -57,6 +58,14 @@ def main() -> None:
         # A map's allocator holds pairs with const keys; MSVC let this pass.
         text = text.replace("allocator<pair<wstring,int>>", "allocator<pair<const wstring,int>>")
         path.write_text(text, encoding="latin-1")
+
+    # A quarter of the hash table, 64 MB: browsers give a page less memory.
+    hash_cpp = root / "AI" / "Hash.cpp"
+    text = hash_cpp.read_text(encoding="latin-1")
+    text = replace(text, "HASHE hash_table[1<<23][2];", "HASHE hash_table[1<<21][2];", hash_cpp)
+    text = replace(text, "(1<<24)*sizeof(HASHE)", "(1<<22)*sizeof(HASHE)", hash_cpp)
+    text = replace(text, "key&0x7fffff;", "key&0x1fffff;", hash_cpp, count=2)
+    hash_cpp.write_text(text, encoding="latin-1")
 
     main_cpp = root / "Common" / "main.cpp"
     text = main_cpp.read_text(encoding="latin-1")
