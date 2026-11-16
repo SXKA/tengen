@@ -243,6 +243,8 @@ pub struct Board {
     hash: u64,
     /// Sum of [`eval::CellValues`] over empty cells, per color.
     value: [i32; 2],
+    /// The same with the late-game table.
+    value_late: [i32; 2],
     /// Number of empty cells with each combination, per color.
     p4_count: [[u16; Pattern4::COUNT]; 2],
 }
@@ -260,6 +262,7 @@ impl Board {
             area: Area::empty(),
             hash: 0,
             value: [0; 2],
+            value_late: [0; 2],
             p4_count: [[0; Pattern4::COUNT]; 2],
         };
         for dir in 0..4 {
@@ -401,6 +404,12 @@ impl Board {
         self.value[color.index()]
     }
 
+    /// Sum of empty-cell values for `color` with the late-game table.
+    #[inline]
+    pub fn pattern_value_late(&self, color: Color) -> i32 {
+        self.value_late[color.index()]
+    }
+
     /// Rectangle containing every candidate move.
     #[inline]
     pub fn area(&self) -> Area {
@@ -538,6 +547,7 @@ impl Board {
         if cell.stone == 0 {
             for c in 0..2 {
                 self.value[c] -= values.value(cell.pcode[c]);
+                self.value_late[c] -= values.value_late(cell.pcode[c]);
                 self.p4_count[c][cell.p4[c] as usize] -= 1;
             }
         }
@@ -550,6 +560,7 @@ impl Board {
         if cell.stone == 0 {
             for c in 0..2 {
                 self.value[c] += values.value(cell.pcode[c]);
+                self.value_late[c] += values.value_late(cell.pcode[c]);
                 self.p4_count[c][cell.p4[c] as usize] += 1;
             }
         }
@@ -569,6 +580,7 @@ impl Board {
     fn recount(&mut self) {
         let values = eval::CellValues::standard();
         self.value = [0; 2];
+        self.value_late = [0; 2];
         self.p4_count = [[0; Pattern4::COUNT]; 2];
         for y in 0..self.size {
             for x in 0..self.size {
@@ -744,6 +756,7 @@ mod tests {
         let mut recount = board.clone();
         recount.recount();
         assert_eq!(recount.value, board.value);
+        assert_eq!(recount.value_late, board.value_late);
         assert_eq!(recount.p4_count, board.p4_count);
         assert_eq!(replay(board).hash, board.hash);
     }
