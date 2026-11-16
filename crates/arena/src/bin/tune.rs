@@ -201,6 +201,73 @@ fn is_quiet(board: &Board) -> bool {
     board.p4_count_at_least(us, Pattern4::CBlock4Flex3) == 0 && board.p4_count_at_least(them, Pattern4::BFlex4) == 0
 }
 
+/// Threads for loading and fitting.
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// Every line of the game files.
+fn read_lines(paths: &[&str]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for path in paths {
+        let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+        lines.extend(std::io::BufReader::new(file).lines().map_while(Result::ok));
+    }
+    lines
+}
+
+/// Run `f` on contiguous chunks of `items` in parallel, passing each item's
+/// index; results come back in order.
+fn par_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(usize, &T) -> R + Sync) -> Vec<R> {
+    let chunk = items.len().div_ceil(threads()).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .enumerate()
+            .map(|(c, part)| {
+                let f = &f;
+                scope.spawn(move || {
+                    part.iter()
+                        .enumerate()
+                        .map(|(i, item)| f(c * chunk + i, item))
+                        .collect::<Vec<R>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("worker thread"))
+            .collect()
+    })
+}
+
+/// Sum per-sample gradients over `samples` in parallel.
+fn par_gradient<T: Sync>(samples: &[T], n: usize, f: impl Fn(&T, &mut [f64]) + Sync) -> Vec<f64> {
+    let chunk = samples.len().div_ceil(threads()).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = samples
+            .chunks(chunk)
+            .map(|part| {
+                let f = &f;
+                scope.spawn(move || {
+                    let mut grad = vec![0.0; n];
+                    for s in part {
+                        f(s, &mut grad);
+                    }
+                    grad
+                })
+            })
+            .collect();
+        let mut total = vec![0.0; n];
+        for h in handles {
+            for (t, g) in total.iter_mut().zip(h.join().expect("worker thread")) {
+                *t += g;
+            }
+        }
+        total
+    })
+}
+
 /// Training and validation positions (every tenth game is held out).
 ///
 /// Positions where a shallow search already finds a forced win are left
@@ -208,56 +275,65 @@ fn is_quiet(board: &Board) -> bool {
 /// be trained to anticipate them.
 fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
     let tables = Tables::get();
-    let (mut train, mut valid) = (Vec::new(), Vec::new());
-    let mut games = 0;
-    let mut tactical = 0;
-    let mut engine = Engine::new(8);
-    let limits = Limits::depth(1);
-    for path in paths {
-        let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-        for line in std::io::BufReader::new(file).lines() {
-            let Some((size, outcome, moves)) = line.ok().as_deref().and_then(parse_game) else {
+    let lines = read_lines(paths);
+    let tactical = std::sync::atomic::AtomicUsize::new(0);
+    thread_local! {
+        static ENGINE: std::cell::RefCell<Engine> = std::cell::RefCell::new(Engine::new(8));
+    }
+    let per_game = par_chunks(&lines, |index, line| {
+        let mut samples = Vec::new();
+        let Some((size, outcome, moves)) = parse_game(line) else {
+            return (index, samples);
+        };
+        let limits = Limits::depth(1);
+        let mut board = Board::new(size);
+        for (ply, &pos) in moves.iter().enumerate() {
+            board.play(pos);
+            if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
                 continue;
-            };
-            games += 1;
-            let target = if games % 10 == 0 { &mut valid } else { &mut train };
-            let mut board = Board::new(size);
-            for (ply, &pos) in moves.iter().enumerate() {
-                board.play(pos);
-                if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
-                    continue;
-                }
-                if engine.search(&board, &limits, |_| {}).value.abs() >= MATE_BOUND {
-                    tactical += 1;
-                    continue;
-                }
-                let black = outcome.black_score();
-                let result = if board.side_to_move() == Color::Black {
-                    black
-                } else {
-                    1.0 - black
-                };
-                let features = Features::of(&board);
-                let (mut pattern, mut pattern4) = ([0; Pattern::COUNT], [0; Pattern4::COUNT]);
-                for &(code, n) in &features.pcode {
-                    for p in tables.patterns(code) {
-                        pattern[p as usize] += n;
-                    }
-                    pattern4[tables.pattern4(code) as usize] += n;
-                }
-                target.push(Sample {
-                    features,
-                    pattern,
-                    pattern4,
-                    result,
-                });
             }
+            let value = ENGINE.with(|e| e.borrow_mut().search(&board, &limits, |_| {}).value);
+            if value.abs() >= MATE_BOUND {
+                tactical.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let black = outcome.black_score();
+            let result = if board.side_to_move() == Color::Black {
+                black
+            } else {
+                1.0 - black
+            };
+            let features = Features::of(&board);
+            let (mut pattern, mut pattern4) = ([0; Pattern::COUNT], [0; Pattern4::COUNT]);
+            for &(code, n) in &features.pcode {
+                for p in tables.patterns(code) {
+                    pattern[p as usize] += n;
+                }
+                pattern4[tables.pattern4(code) as usize] += n;
+            }
+            samples.push(Sample {
+                features,
+                pattern,
+                pattern4,
+                result,
+            });
+        }
+        (index, samples)
+    });
+    let (mut train, mut valid) = (Vec::new(), Vec::new());
+    for (index, samples) in per_game {
+        if (index + 1) % 10 == 0 {
+            valid.extend(samples)
+        } else {
+            train.extend(samples)
         }
     }
     eprintln!(
-        "{} training and {} validation positions from {games} games ({tactical} with forced wins skipped)",
+        "{} training and {} validation positions from {} games ({} with forced wins skipped)",
         train.len(),
-        valid.len()
+        valid.len(),
+        lines.len(),
+        tactical.into_inner()
     );
     (train, valid)
 }
@@ -338,28 +414,33 @@ fn sigmoid(v: f64) -> f64 {
 }
 
 /// Mean squared error of the predicted results.
-fn loss(model: &dyn Model, samples: &[Sample], p: &[f64]) -> f64 {
-    let sum: f64 = samples
-        .iter()
-        .map(|s| (s.result - sigmoid(model.eval(s, p))).powi(2))
-        .sum();
-    sum / samples.len().max(1) as f64
+fn loss(model: &(dyn Model + Sync), samples: &[Sample], p: &[f64]) -> f64 {
+    let sum = par_gradient(samples, 1, |s, acc| {
+        acc[0] += (s.result - sigmoid(model.eval(s, p))).powi(2)
+    });
+    sum[0] / samples.len().max(1) as f64
 }
 
 /// Full-batch Adam on mean squared error plus `l2 * |p - prior|^2`.
-fn optimize(model: &dyn Model, samples: &[Sample], start: &[f64], prior: &[f64], l2: f64, epochs: usize) -> Vec<f64> {
+fn optimize(
+    model: &(dyn Model + Sync),
+    samples: &[Sample],
+    start: &[f64],
+    prior: &[f64],
+    l2: f64,
+    epochs: usize,
+) -> Vec<f64> {
     let n = model.params();
     let mut p = start.to_vec();
     let (mut m, mut v) = (vec![0.0; n], vec![0.0; n]);
     let (lr, beta1, beta2) = (0.5, 0.9, 0.999);
     let count = samples.len() as f64;
     for epoch in 1..=epochs {
-        let mut grad = vec![0.0; n];
-        for s in samples {
+        let grad = par_gradient(samples, n, |s, grad| {
             let q = sigmoid(model.eval(s, &p));
             // d/dv of (r - q)^2 with q = sigmoid(v / SCALE).
-            model.grad(s, -2.0 * (s.result - q) * q * (1.0 - q) / SCALE / count, &mut grad);
-        }
+            model.grad(s, -2.0 * (s.result - q) * q * (1.0 - q) / SCALE / count, grad);
+        });
         for i in 0..n {
             let g = grad[i] + 2.0 * l2 * (p[i] - prior[i]);
             m[i] = beta1 * m[i] + (1.0 - beta1) * g;
@@ -475,46 +556,50 @@ struct PolicySample {
 /// Positions where the mover chose freely among all candidates (no forced
 /// reply), with every tenth game held out.
 fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
-    let (mut train, mut valid) = (Vec::new(), Vec::new());
-    let mut games = 0;
-    let mut list = Vec::new();
-    for path in paths {
-        let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
-        for line in std::io::BufReader::new(file).lines() {
-            let Some((size, _, moves)) = line.ok().as_deref().and_then(parse_game) else {
-                continue;
-            };
-            games += 1;
-            let target_set = if games % 10 == 0 { &mut valid } else { &mut train };
-            let mut board = Board::new(size);
-            for &played in &moves {
-                if board.ply() >= 2
-                    && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
-                    && let Some(target) = list.iter().position(|m| m.pos == played)
-                {
-                    let us = board.side_to_move();
-                    let candidates = list
-                        .iter()
-                        .map(|m| (board.pcode(m.pos, us), board.pcode(m.pos, us.opponent())))
-                        .collect();
-                    target_set.push(PolicySample { candidates, target });
-                }
-                board.play(played);
+    let lines = read_lines(paths);
+    let per_game = par_chunks(&lines, |index, line| {
+        let mut samples = Vec::new();
+        let Some((size, _, moves)) = parse_game(line) else {
+            return (index, samples);
+        };
+        let mut board = Board::new(size);
+        let mut list = Vec::new();
+        for &played in &moves {
+            if board.ply() >= 2
+                && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
+                && let Some(target) = list.iter().position(|m| m.pos == played)
+            {
+                let us = board.side_to_move();
+                let candidates = list
+                    .iter()
+                    .map(|m| (board.pcode(m.pos, us), board.pcode(m.pos, us.opponent())))
+                    .collect();
+                samples.push(PolicySample { candidates, target });
             }
+            board.play(played);
+        }
+        (index, samples)
+    });
+    let (mut train, mut valid) = (Vec::new(), Vec::new());
+    for (index, samples) in per_game {
+        if (index + 1) % 10 == 0 {
+            valid.extend(samples)
+        } else {
+            train.extend(samples)
         }
     }
     eprintln!(
-        "{} training and {} validation positions from {games} games",
+        "{} training and {} validation positions from {} games",
         train.len(),
-        valid.len()
+        valid.len(),
+        lines.len()
     );
     (train, valid)
 }
 
 /// Mean cross-entropy and top-1 accuracy of the move-ordering tables.
 fn policy_loss(samples: &[PolicySample], own: &[f64], opp: &[f64], scale: f64) -> (f64, f64) {
-    let (mut loss, mut hits) = (0.0, 0);
-    for s in samples {
+    let totals = par_gradient(samples, 2, |s, acc| {
         let scores: Vec<f64> = s
             .candidates
             .iter()
@@ -522,13 +607,11 @@ fn policy_loss(samples: &[PolicySample], own: &[f64], opp: &[f64], scale: f64) -
             .collect();
         let max = scores.iter().cloned().fold(f64::MIN, f64::max);
         let sum: f64 = scores.iter().map(|v| (v - max).exp()).sum();
-        loss += max + sum.ln() - scores[s.target];
-        if scores[s.target] >= max {
-            hits += 1;
-        }
-    }
+        acc[0] += max + sum.ln() - scores[s.target];
+        acc[1] += (scores[s.target] >= max) as u8 as f64;
+    });
     let n = samples.len().max(1) as f64;
-    (loss / n, hits as f64 / n)
+    (totals[0] / n, totals[1] / n)
 }
 
 /// Learn the move-ordering tables as corrections to the defaults: one per
@@ -590,8 +673,9 @@ fn fit_policy(paths: &[&str], start: &Weights, epochs: usize) -> Weights {
     let (lr, beta1, beta2) = (2.0, 0.9, 0.999);
     for epoch in 1..=epochs {
         let (own, opp) = expand(&params);
-        let (mut g_own, mut g_opp) = (vec![0.0; PCODE_COUNT], vec![0.0; PCODE_COUNT]);
-        for s in &train {
+        // Gradient per pattern code, own codes first, then the opponent's.
+        let count = train.len() as f64;
+        let g = par_gradient(&train, 2 * PCODE_COUNT, |s, g| {
             let scores: Vec<f64> = s
                 .candidates
                 .iter()
@@ -601,11 +685,12 @@ fn fit_policy(paths: &[&str], start: &Weights, epochs: usize) -> Weights {
             let sum: f64 = scores.iter().map(|x| (x - max).exp()).sum();
             for (i, &(a, b)) in s.candidates.iter().enumerate() {
                 let p = (scores[i] - max).exp() / sum;
-                let g = (p - (i == s.target) as u8 as f64) / scale / train.len() as f64;
-                g_own[a as usize] += g;
-                g_opp[b as usize] += g;
+                let d = (p - (i == s.target) as u8 as f64) / scale / count;
+                g[a as usize] += d;
+                g[PCODE_COUNT + b as usize] += d;
             }
-        }
+        });
+        let (g_own, g_opp) = g.split_at(PCODE_COUNT);
         let mut grad = [0.0; N];
         for code in 0..PCODE_COUNT {
             let (lines, combo) = (
