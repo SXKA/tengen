@@ -32,6 +32,8 @@ pub struct Brain {
     stdin: ChildStdin,
     lines: Receiver<String>,
     timeout: Duration,
+    /// `MESSAGE` lines received since the last [`Brain::take_messages`].
+    messages: Vec<String>,
 }
 
 impl Brain {
@@ -63,6 +65,7 @@ impl Brain {
             stdin,
             lines,
             timeout: Duration::from_millis(turn_ms * 3 + 2000),
+            messages: Vec::new(),
         };
         // One thread and a modest table so many games can run side by side.
         brain.send("INFO thread_num 1");
@@ -107,6 +110,11 @@ impl Brain {
         self.read_move()
     }
 
+    /// The `MESSAGE` lines received since the last call.
+    pub fn take_messages(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.messages)
+    }
+
     /// End the game and the process.
     pub fn quit(&mut self) {
         self.send("END");
@@ -127,7 +135,15 @@ impl Brain {
             match self.lines.recv_timeout(left) {
                 Ok(line) => {
                     let word = line.split_whitespace().next().unwrap_or("");
-                    if matches!(word, "MESSAGE" | "DEBUG" | "") {
+                    if word == "MESSAGE" {
+                        // Games never read them: keep only the latest.
+                        if self.messages.len() >= 256 {
+                            self.messages.drain(..128);
+                        }
+                        self.messages.push(line);
+                        continue;
+                    }
+                    if matches!(word, "DEBUG" | "") {
                         continue;
                     }
                     return Ok(line);

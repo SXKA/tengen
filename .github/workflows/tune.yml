@@ -6,6 +6,9 @@ name: Tune
 # games are attached to the run, and the weights are also pushed to the
 # branch tune/<run id>, ready for a pull request: as weights.txt for
 # freestyle, weights-RULE.txt for the other rules.
+#
+# With a teacher, Rapfi evaluates every position the fit trains on, and the
+# fit learns those evaluations instead of only the game results.
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +26,21 @@ on:
         type: choice
         options: [freestyle, standard, renju, caro, freestyle-caro]
         default: freestyle
+      teacher:
+        description: Rapfi evaluation that labels the positions (freestyle, standard and renju only)
+        type: choice
+        options: [none, nnue, classical]
+        default: none
+      teacher_nodes:
+        description: Nodes Rapfi searches per position
+        default: "20000"
+      lambda:
+        description: Share of the teacher in the targets (the rest is the game result)
+        default: "1"
+      per_code:
+        description: Also refine every pattern code on its own
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -71,8 +89,77 @@ jobs:
           name: games-${{ matrix.shard }}
           path: games-${{ matrix.shard }}.txt
 
+  rapfi:
+    if: inputs.teacher != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi
+          path: rapfi
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi-networks
+          path: networks
+      - name: Build Rapfi
+        run: |
+          cmake -S rapfi/Rapfi -B build -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SSE=ON -DUSE_AVX2=ON -DUSE_AVX512=OFF -DUSE_BMI2=OFF -DUSE_VNNI=OFF -DNO_COMMAND_MODULES=ON
+          cmake --build build -j "$(nproc)"
+          strip build/pbrain-rapfi
+      - name: Set up the evaluation
+        run: |
+          mkdir -p dist
+          cp build/pbrain-rapfi dist/
+          if [ "${{ inputs.teacher }}" = nnue ]; then
+            cp networks/config-example/config.toml networks/classical/*.bin networks/mix9svq/* dist/
+          else
+            cp networks/config-example/gomocalc-classical260809.toml dist/config.toml
+            cp networks/classical/*.bin dist/
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rapfi
+          path: dist
+
+  label:
+    needs: [build, selfplay, rapfi]
+    if: ${{ !cancelled() && inputs.teacher != 'none' && needs.rapfi.result == 'success' && needs.selfplay.result != 'failure' }}
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+      - uses: actions/download-artifact@v8
+        with:
+          name: rapfi
+          path: rapfi
+      - uses: actions/download-artifact@v8
+        if: inputs.reuse_run == ''
+        with:
+          name: games-${{ matrix.shard }}
+      - uses: actions/download-artifact@v8
+        if: inputs.reuse_run != ''
+        with:
+          name: games-${{ matrix.shard }}
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+      - name: Label
+        run: |
+          chmod +x tengen-tune rapfi/pbrain-rapfi
+          ./tengen-tune label --data games-${{ matrix.shard }}.txt --brain rapfi/pbrain-rapfi \
+            --nodes ${{ inputs.teacher_nodes }} --out labelled-${{ matrix.shard }}.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: labelled-${{ matrix.shard }}
+          path: labelled-${{ matrix.shard }}.txt
+
   fit:
-    needs: [build, selfplay]
+    needs: [build, selfplay, label]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
@@ -94,8 +181,14 @@ jobs:
       - name: Fit
         run: |
           chmod +x artifacts/pbrain-tengen artifacts/tengen-arena artifacts/tengen-tune
-          cat artifacts/games-*.txt > games.txt
-          artifacts/tengen-tune fit --data games.txt --out eval.txt 2>&1 | tee fit.log
+          if [ "${{ inputs.teacher }}" = none ]; then
+            cat artifacts/games-*.txt > games.txt
+          else
+            cat artifacts/labelled-*.txt > games.txt
+          fi
+          per_code=""
+          [ "${{ inputs.per_code }}" = true ] && per_code=--per-code
+          artifacts/tengen-tune fit --data games.txt --lambda ${{ inputs.lambda }} $per_code --out eval.txt 2>&1 | tee fit.log
           artifacts/tengen-tune fit-policy --data games.txt --weights eval.txt --out weights.txt 2>&1 | tee -a fit.log
           { echo '### Fit'; echo '```'; cat fit.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check against the current weights

@@ -58,6 +58,8 @@ impl Game {
 
 /// Parse one line written by [`write_game`].
 pub fn parse_game(line: &str) -> Option<Game> {
+    // `tengen-tune label` appends position labels after a `;`.
+    let line = line.split(';').next().unwrap_or(line);
     let mut words = line.split_whitespace();
     let first = words.next()?;
     let (size, rule) = match first.split_once(':') {
