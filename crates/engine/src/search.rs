@@ -533,12 +533,15 @@ impl<'a> Worker<'a> {
         let mut best = -INFINITE;
         for i in 0..self.root_moves.len() {
             let pos = self.root_moves[i].pos;
+            let us = self.board.side_to_move();
+            let tactical =
+                self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, us.opponent()) >= Pattern4::HFlex3;
             self.nodes += 1;
             self.board.play(pos);
             let v = if i == 0 {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
             } else {
-                let r = if depth >= 3 && i >= 3 && self.board.p4(pos, self.board.side_to_move()) < Pattern4::HFlex3 {
+                let r = if depth >= 3 && i >= 3 && !tactical {
                     (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1).clamp(0, depth - 2)
                 } else {
                     0

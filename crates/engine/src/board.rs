@@ -116,6 +116,35 @@ impl Area {
     }
 }
 
+/// Iterator over the cells of an [`Area`], row by row.
+pub struct AreaCells {
+    x: u8,
+    y: u8,
+    x0: u8,
+    x1: u8,
+    y1: u8,
+}
+
+impl Iterator for AreaCells {
+    type Item = Pos;
+
+    #[inline]
+    fn next(&mut self) -> Option<Pos> {
+        // An empty area has x0 > x1 and y0 > y1.
+        if self.y > self.y1 || self.x > self.x1 {
+            return None;
+        }
+        let pos = Pos::new(self.x as usize, self.y as usize);
+        if self.x == self.x1 {
+            self.x = self.x0;
+            self.y += 1;
+        } else {
+            self.x += 1;
+        }
+        Some(pos)
+    }
+}
+
 /// Cached per-cell state.
 #[derive(Clone, Copy)]
 struct Cell {
@@ -382,11 +411,15 @@ impl Board {
 
     /// Every cell of the candidate area, row by row. Empty when no stone has
     /// been played.
-    pub fn area_cells(&self) -> impl Iterator<Item = Pos> + use<> {
+    pub fn area_cells(&self) -> AreaCells {
         let a = self.area;
-        // An empty area has x0 > x1 and y0 > y1, so both ranges are empty.
-        let (xs, ys) = (a.x0..=a.x1, a.y0..=a.y1);
-        ys.flat_map(move |y| xs.clone().map(move |x| Pos::new(x as usize, y as usize)))
+        AreaCells {
+            x: a.x0,
+            y: a.y0,
+            x0: a.x0,
+            x1: a.x1,
+            y1: a.y1,
+        }
     }
 
     /// Empty cells near stones, row by row.
@@ -566,10 +599,15 @@ impl Board {
             self.lines[color.index()][dir][line] ^= bit;
         }
         self.cells[pos.index()].stone = value;
-        self.refresh_cell(pos, tables);
-        self.attach(pos, values);
+        // An occupied cell's patterns are never read and go stale; bring them
+        // up to date when it is emptied again.
+        if stone.is_none() {
+            self.refresh_cell(pos, tables);
+            self.attach(pos, values);
+        }
 
-        for delta in DELTA {
+        // Only the patterns along the line through `pos` change.
+        for (dir, delta) in DELTA.into_iter().enumerate() {
             for side in [-1isize, 1] {
                 let mut q = pos.index() as isize;
                 for _ in 0..HALF_WINDOW {
@@ -579,11 +617,26 @@ impl Board {
                         continue;
                     }
                     self.detach(next, values);
-                    self.refresh_cell(next, tables);
+                    self.refresh_direction(next, dir, tables);
                     self.attach(next, values);
                 }
             }
         }
+    }
+
+    /// Recompute the patterns of an empty `pos` along `dir` only, and the
+    /// combinations that depend on them.
+    #[inline]
+    fn refresh_direction(&mut self, pos: Pos, dir: usize, tables: &Tables) {
+        let (line, at) = self.line_of(pos, dir);
+        let black = self.lines[0][dir][line] >> at;
+        let white = self.lines[1][dir][line] >> at;
+        let edge = self.edges[dir][line] >> at;
+        let cell = &mut self.cells[pos.index()];
+        cell.pattern[0][dir] = tables.line(black, white | edge);
+        cell.pattern[1][dir] = tables.line(white, black | edge);
+        cell.pcode = cell.pattern.map(|p| tables.pcode(p));
+        cell.p4 = cell.pcode.map(|code| tables.pattern4(code));
     }
 
     /// `q` as a board cell if it is on the board. Every step changes the

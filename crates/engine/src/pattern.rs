@@ -181,6 +181,8 @@ pub const WINDOW_BITS: u32 = 2 * HALF_WINDOW + 1;
 const WINDOW_MASK: u32 = (1 << WINDOW_BITS) - 1;
 const CENTER: u32 = HALF_WINDOW;
 
+const LINE_ENTRIES: usize = 1 << (2 * WINDOW_BITS);
+
 #[inline]
 fn table_index(own: u32, blocked: u32) -> usize {
     ((own & WINDOW_MASK) | ((blocked & WINDOW_MASK) << WINDOW_BITS)) as usize
@@ -189,9 +191,10 @@ fn table_index(own: u32, blocked: u32) -> usize {
 /// All precomputed pattern tables.
 pub struct Tables {
     /// Window -> pattern of a stone on the empty center.
-    line: Vec<Pattern>,
-    /// Four patterns (as a base-13 number) -> pattern code.
-    pcode: Vec<PatternCode>,
+    line: Box<[Pattern; LINE_ENTRIES]>,
+    /// Four patterns -> pattern code. Indexing by the enums lets the compiler
+    /// drop bounds checks.
+    pcode: Box<[[[[PatternCode; Pattern::COUNT]; Pattern::COUNT]; Pattern::COUNT]; Pattern::COUNT]>,
     /// Pattern code -> combination.
     pattern4: Vec<Pattern4>,
     /// Pattern code -> the four patterns, weakest first.
@@ -216,9 +219,7 @@ impl Tables {
     /// Pattern code of four line patterns, in any order.
     #[inline]
     pub fn pcode(&self, p: [Pattern; 4]) -> PatternCode {
-        let n = Pattern::COUNT;
-        let index = ((p[0] as usize * n + p[1] as usize) * n + p[2] as usize) * n + p[3] as usize;
-        self.pcode[index]
+        self.pcode[p[0] as usize][p[1] as usize][p[2] as usize][p[3] as usize]
     }
 
     /// Combination class of a pattern code.
@@ -250,14 +251,18 @@ impl Tables {
             }
         }
         assert_eq!(patterns.len(), PCODE_COUNT);
-        let n = Pattern::COUNT;
-        let pcode = (0..n.pow(4))
-            .map(|index| {
-                let mut key = [index / (n * n * n), index / (n * n) % n, index / n % n, index % n];
-                key.sort_unstable();
-                index_of[&key]
-            })
-            .collect();
+        let mut pcode = Box::new([[[[0; Pattern::COUNT]; Pattern::COUNT]; Pattern::COUNT]; Pattern::COUNT]);
+        for (a, slab) in pcode.iter_mut().enumerate() {
+            for (b, plane) in slab.iter_mut().enumerate() {
+                for (c, row) in plane.iter_mut().enumerate() {
+                    for (d, code) in row.iter_mut().enumerate() {
+                        let mut key = [a, b, c, d];
+                        key.sort_unstable();
+                        *code = index_of[&key];
+                    }
+                }
+            }
+        }
         let pattern4 = patterns.iter().map(|&p| Pattern4::from_patterns(p)).collect();
         Tables {
             line,
@@ -318,7 +323,7 @@ fn classify_placed(own: u32, blocked: u32, placed: impl Fn(u32) -> Pattern) -> P
     }
 }
 
-fn build_line_table() -> Vec<Pattern> {
+fn build_line_table() -> Box<[Pattern; LINE_ENTRIES]> {
     let size = 1usize << (2 * WINDOW_BITS);
     let center = 1u32 << CENTER;
 
@@ -347,7 +352,11 @@ fn build_line_table() -> Vec<Pattern> {
         placed[table_index(own, blocked)] = pattern;
     }
 
-    let mut table = vec![Pattern::Dead; size];
+    // Built on the heap: the table is too large for small (wasm) stacks.
+    let mut table: Box<[Pattern; LINE_ENTRIES]> = vec![Pattern::Dead; LINE_ENTRIES]
+        .into_boxed_slice()
+        .try_into()
+        .expect("table size");
     for own in 0..(1u32 << WINDOW_BITS) {
         for blocked in 0..(1u32 << WINDOW_BITS) {
             if own & blocked == 0 && (own | blocked) & center == 0 {
@@ -463,7 +472,7 @@ mod tests {
         assert_eq!(code, t.pcode([F2, Dead, F3, B4]));
         assert_eq!(t.patterns(code), [Dead, F2, F3, B4]);
         assert_eq!(t.pattern4(code), Pattern4::CBlock4Flex3);
-        let distinct: std::collections::HashSet<_> = t.pcode.iter().collect();
+        let distinct: std::collections::HashSet<_> = t.pcode.iter().flatten().flatten().flatten().collect();
         assert_eq!(distinct.len(), PCODE_COUNT);
     }
 
