@@ -1,0 +1,93 @@
+name: Classic engines WASM
+
+# Compiles two classic Gomocup engines to WebAssembly for the website's
+# engine matches, with the compatibility layer in engines/, and pushes the
+# result to the branch classic-wasm/<run id>, ready for a pull request:
+#   Pela by Petr Lastovicka (GPL), from https://github.com/plastovicka/Piskvork
+#   SlowRenju by Tianyi Hao (GPL-3.0), from https://github.com/wind23/SlowRenju
+# The files go to web/public/engines/classic.
+on:
+  workflow_dispatch:
+    inputs:
+      piskvork:
+        description: Piskvork commit (for Pela)
+        default: 2c3296514a3735cad83eed8a3134f51324f962ca
+      slowrenju:
+        description: SlowRenju commit
+        default: 41007cf70762b62df77223da25c9605d0a853602
+      emsdk:
+        description: Emscripten version
+        default: latest
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: plastovicka/Piskvork
+          ref: ${{ inputs.piskvork }}
+          path: sources/piskvork
+      - uses: actions/checkout@v7
+        with:
+          repository: wind23/SlowRenju
+          ref: ${{ inputs.slowrenju }}
+          path: sources/slowrenju
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ inputs.emsdk }}
+      - name: Test natively
+        run: |
+          # The same front ends, built for this machine, must answer the protocol.
+          sh engines/build.sh pela sources/piskvork native native
+          sh engines/build.sh slowrenju sources/slowrenju native native
+          for brain in pela slowrenju; do
+            printf 'START 15\nINFO timeout_turn 300\nBOARD\n7,7,2\n8,8,1\n7,8,2\nDONE\nEND\n' |
+              timeout 20 "native/pbrain-$brain" > "$brain.txt"
+            cat "$brain.txt"
+            grep -qx 'OK' "$brain.txt"
+            grep -qE '^[0-9]+,[0-9]+$' "$brain.txt"
+          done
+      - name: Build
+        run: |
+          out=web/public/engines/classic
+          rm -rf "$out"
+          sh engines/build.sh pela sources/piskvork "$out"
+          sh engines/build.sh slowrenju sources/slowrenju "$out"
+          piskvork=$(git -C sources/piskvork rev-parse HEAD)
+          slowrenju=$(git -C sources/slowrenju rev-parse HEAD)
+          cat > "$out/NOTICE.md" <<EOF
+          # Classic engines
+
+          Built with Emscripten $(emcc --version | head -1 | sed 's/.*) //') and the compatibility layer in
+          \`engines/\` of this repository (\`.github/workflows/classic-wasm.yml\` is how):
+
+          - \`pela.*\`: Pela by Petr Lastovicka, licensed under the GNU General Public License, from
+            [Piskvork](https://github.com/plastovicka/Piskvork) at commit
+            [\`$piskvork\`](https://github.com/plastovicka/Piskvork/tree/$piskvork) (\`source/pbrain\`).
+          - \`slowrenju.*\`: SlowRenju by Tianyi Hao, licensed under the GNU General Public License v3.0,
+            from [SlowRenju](https://github.com/wind23/SlowRenju) at commit
+            [\`$slowrenju\`](https://github.com/wind23/SlowRenju/tree/$slowrenju), adapted by
+            \`engines/slowrenju/patch.py\`.
+          EOF
+          ls -la "$out"
+          {
+            echo '### Classic engines WASM'
+            echo "piskvork $piskvork, slowrenju $slowrenju"
+            echo
+            ls -la "$out" | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="classic-wasm/${{ github.run_id }}"
+          git switch -c "$branch"
+          git add web/public/engines/classic
+          git commit -m "Classic engines WASM build from run ${{ github.run_id }}"
+          git push origin "$branch"
