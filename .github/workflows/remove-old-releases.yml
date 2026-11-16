@@ -1,0 +1,34 @@
+name: Remove Qt-Gomoku releases
+
+# One-off cleanup: deletes the 1.x releases and tags left from Qt-Gomoku.
+# Run it from the Actions tab, typing "delete" to confirm, then remove this
+# file.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "delete" to remove every v1.* release and tag
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  remove:
+    if: inputs.confirm == 'delete'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete v1.* releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^v1\.' | while read -r tag; do
+            echo "Deleting release $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done
+          # Tags without a release.
+          gh api "repos/$GH_REPO/git/matching-refs/tags/v1." --jq '.[].ref' | while read -r ref; do
+            echo "Deleting $ref"
+            gh api -X DELETE "repos/$GH_REPO/git/$ref"
+          done

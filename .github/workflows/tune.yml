@@ -2,7 +2,8 @@ name: Tune
 
 # Self-play games, fit the evaluation weights to their results, and check the
 # fitted weights against the current ones with an SPRT. Start it from the
-# Actions tab; the weights and games are attached to the run.
+# Actions tab; the weights and games are attached to the run. Adopt the
+# weights by copying them to crates/engine/src/weights.txt.
 on:
   workflow_dispatch:
     inputs:
@@ -35,8 +36,8 @@ jobs:
         run: target/release/tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} --seed "${{ github.run_id }}" --out games.txt
       - name: Fit
         run: |
-          target/release/tengen-tune fit --data games.txt --out weights.txt | tee fitted.rs
-          { echo '### Fitted weights'; echo '```rust'; cat fitted.rs; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          target/release/tengen-tune fit --data games.txt --out weights.txt 2>&1 | tee fit.log
+          { echo '### Fit'; echo '```'; cat fit.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check against the current weights
         run: |
           target/release/tengen-arena \
@@ -49,5 +50,5 @@ jobs:
           name: tuning
           path: |
             weights.txt
-            fitted.rs
+            fit.log
             games.txt
