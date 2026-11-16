@@ -14,7 +14,11 @@
 //! own, pulled toward the factored values, and keeps the refinement if it
 //! predicts the held-out games (one in ten) better. That refinement has
 //! overfitted so far: on 3,800 games it lost about 24 Elo where the factored
-//! fit gained 23. `init` writes the untuned factored defaults.
+//! fit gained 23. `fit-policy` learns the move-ordering tables: it adjusts
+//! the default scores, per line pattern and combination for the mover and
+//! for the opponent, so that a softmax over the candidate moves predicts the
+//! move played. Run it after `fit`, which resets them to their defaults.
+//! `init` writes the untuned factored defaults.
 
 use std::io::{BufRead, BufWriter, Write};
 use std::sync::Mutex;
@@ -24,13 +28,15 @@ use std::time::Instant;
 use tengen_arena::openings::{Rng, opening};
 use tengen_arena::record::{Outcome, parse_game, write_game};
 use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THREAT_COUNT, Weights};
-use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, Tables};
+use tengen_engine::movegen;
+use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 use tengen_engine::search::MATE_BOUND;
 use tengen_engine::{Board, Color, Engine, Limits};
 
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] --out FILE [--weights FILE]
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] --out FILE
+  tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
 fn main() {
@@ -70,6 +76,12 @@ fn main() {
             let epochs = number("--epochs", 2000) as usize;
             let per_code = args.iter().any(|a| a == "--per-code");
             let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, per_code);
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-policy") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let epochs = number("--epochs", 300) as usize;
+            let tuned = fit_policy(&data.split(',').collect::<Vec<_>>(), &weights, epochs);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("init") => {
@@ -135,7 +147,7 @@ fn selfplay(cfg: SelfPlay) {
     });
 }
 
-/// One self-play game, adjudicated as soon as either side sees a forced win.
+/// One self-play game, played until a five or a full board.
 fn play(engine: &mut Engine, rng: &mut Rng, cfg: &SelfPlay) -> (Outcome, Vec<tengen_engine::Pos>) {
     let mut board = Board::new(cfg.size);
     for pos in opening(cfg.size, rng, engine) {
@@ -156,16 +168,16 @@ fn play(engine: &mut Engine, rng: &mut Rng, cfg: &SelfPlay) -> (Outcome, Vec<ten
         }
         let us = board.side_to_move();
         let result = engine.search(&board, &limits, |_| {});
-        if result.value >= MATE_BOUND {
-            break win_for(us);
-        }
-        if result.value <= -MATE_BOUND {
-            break win_for(us.opponent());
-        }
         let Some(pos) = result.best_move else {
             break Outcome::Draw;
         };
+        // Play wins out rather than adjudicate them, so the winning moves
+        // appear in the record for move-ordering training.
+        let five = board.p4(pos, us) == Pattern4::AFive;
         board.play(pos);
+        if five {
+            break win_for(us);
+        }
     };
     (outcome, board.moves().collect())
 }
@@ -409,9 +421,13 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
                 threat[t] = tuned_factored.threat[t];
             }
         }
+        let pcode = rounded[..PCODE_COUNT].to_vec();
+        let (policy_own, policy_opp) = eval::default_policy(&pcode);
         let weights = Weights {
-            pcode: rounded[..PCODE_COUNT].to_vec(),
+            pcode,
             threat,
+            policy_own,
+            policy_opp,
         };
         let valid_loss = loss(&codes, &valid, &as_params(&weights));
         eprintln!(
@@ -425,4 +441,213 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
     }
     eprintln!("kept validation loss {best_loss:.6}");
     best
+}
+
+/// A position for move-ordering training: every candidate's pattern codes
+/// for the mover and the opponent, and which candidate was played.
+struct PolicySample {
+    candidates: Vec<(PatternCode, PatternCode)>,
+    target: usize,
+}
+
+/// Positions where the mover chose freely among all candidates (no forced
+/// reply), with every tenth game held out.
+fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
+    let (mut train, mut valid) = (Vec::new(), Vec::new());
+    let mut games = 0;
+    let mut list = Vec::new();
+    for path in paths {
+        let file = std::fs::File::open(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+        for line in std::io::BufReader::new(file).lines() {
+            let Some((size, _, moves)) = line.ok().as_deref().and_then(parse_game) else {
+                continue;
+            };
+            games += 1;
+            let target_set = if games % 10 == 0 { &mut valid } else { &mut train };
+            let mut board = Board::new(size);
+            for &played in &moves {
+                if board.ply() >= 2
+                    && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
+                    && let Some(target) = list.iter().position(|m| m.pos == played)
+                {
+                    let us = board.side_to_move();
+                    let candidates = list
+                        .iter()
+                        .map(|m| (board.pcode(m.pos, us), board.pcode(m.pos, us.opponent())))
+                        .collect();
+                    target_set.push(PolicySample { candidates, target });
+                }
+                board.play(played);
+            }
+        }
+    }
+    eprintln!(
+        "{} training and {} validation positions from {games} games",
+        train.len(),
+        valid.len()
+    );
+    (train, valid)
+}
+
+/// Mean cross-entropy and top-1 accuracy of the move-ordering tables.
+fn policy_loss(samples: &[PolicySample], own: &[f64], opp: &[f64], scale: f64) -> (f64, f64) {
+    let (mut loss, mut hits) = (0.0, 0);
+    for s in samples {
+        let scores: Vec<f64> = s
+            .candidates
+            .iter()
+            .map(|&(a, b)| (own[a as usize] + opp[b as usize]) / scale)
+            .collect();
+        let max = scores.iter().cloned().fold(f64::MIN, f64::max);
+        let sum: f64 = scores.iter().map(|v| (v - max).exp()).sum();
+        loss += max + sum.ln() - scores[s.target];
+        if scores[s.target] >= max {
+            hits += 1;
+        }
+    }
+    let n = samples.len().max(1) as f64;
+    (loss / n, hits as f64 / n)
+}
+
+/// Learn the move-ordering tables as corrections to the defaults: one per
+/// line pattern and per combination, for the mover and for the opponent.
+fn fit_policy(paths: &[&str], start: &Weights, epochs: usize) -> Weights {
+    let (train, valid) = load_policy(paths);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    let tables = Tables::get();
+    let base_own: Vec<f64> = start.policy_own.iter().map(|&v| v as f64).collect();
+    let base_opp: Vec<f64> = start.policy_opp.iter().map(|&v| v as f64).collect();
+
+    // The softmax temperature that best fits the current scores, by a
+    // coarse search; the corrections are then learned at that temperature
+    // so their scale stays comparable with history and killer bonuses.
+    let scale = [25.0, 50.0, 100.0, 200.0, 400.0, 800.0]
+        .into_iter()
+        .min_by(|&a, &b| {
+            policy_loss(&train, &base_own, &base_opp, a)
+                .0
+                .total_cmp(&policy_loss(&train, &base_own, &base_opp, b).0)
+        })
+        .unwrap();
+    let scale = [scale * 0.7, scale, scale * 1.4]
+        .into_iter()
+        .min_by(|&a, &b| {
+            policy_loss(&train, &base_own, &base_opp, a)
+                .0
+                .total_cmp(&policy_loss(&train, &base_own, &base_opp, b).0)
+        })
+        .unwrap();
+    let (before, before_acc) = policy_loss(&valid, &base_own, &base_opp, scale);
+    eprintln!(
+        "temperature {scale:.0}: validation loss {before:.4}, top-1 {:.1}%",
+        before_acc * 100.0
+    );
+
+    // Parameters: line pattern and combination corrections, own then opponent.
+    const N: usize = 2 * (Pattern::COUNT + Pattern4::COUNT);
+    let mut params = [0.0f64; N];
+    let expand = |params: &[f64; N]| {
+        let mut own = base_own.clone();
+        let mut opp = base_opp.clone();
+        for code in 0..PCODE_COUNT {
+            let (lines, combo) = (
+                tables.patterns(code as PatternCode),
+                tables.pattern4(code as PatternCode) as usize,
+            );
+            for (table, offset) in [(&mut own, 0), (&mut opp, Pattern::COUNT + Pattern4::COUNT)] {
+                let delta: f64 = lines.iter().map(|&p| params[offset + p as usize]).sum::<f64>()
+                    + params[offset + Pattern::COUNT + combo];
+                table[code] += delta;
+            }
+        }
+        (own, opp)
+    };
+    let (mut m, mut v) = ([0.0; N], [0.0; N]);
+    let (lr, beta1, beta2) = (2.0, 0.9, 0.999);
+    for epoch in 1..=epochs {
+        let (own, opp) = expand(&params);
+        let (mut g_own, mut g_opp) = (vec![0.0; PCODE_COUNT], vec![0.0; PCODE_COUNT]);
+        for s in &train {
+            let scores: Vec<f64> = s
+                .candidates
+                .iter()
+                .map(|&(a, b)| (own[a as usize] + opp[b as usize]) / scale)
+                .collect();
+            let max = scores.iter().cloned().fold(f64::MIN, f64::max);
+            let sum: f64 = scores.iter().map(|x| (x - max).exp()).sum();
+            for (i, &(a, b)) in s.candidates.iter().enumerate() {
+                let p = (scores[i] - max).exp() / sum;
+                let g = (p - (i == s.target) as u8 as f64) / scale / train.len() as f64;
+                g_own[a as usize] += g;
+                g_opp[b as usize] += g;
+            }
+        }
+        let mut grad = [0.0; N];
+        for code in 0..PCODE_COUNT {
+            let (lines, combo) = (
+                tables.patterns(code as PatternCode),
+                tables.pattern4(code as PatternCode) as usize,
+            );
+            for (g, offset) in [(g_own[code], 0), (g_opp[code], Pattern::COUNT + Pattern4::COUNT)] {
+                for &p in &lines {
+                    grad[offset + p as usize] += g;
+                }
+                grad[offset + Pattern::COUNT + combo] += g;
+            }
+        }
+        // Adjudicated self-play games stop once a win is found, so winning
+        // moves are rarely seen played; leave the corrections of the
+        // strongest combinations at zero rather than learn that bias.
+        for (i, g) in grad.iter_mut().enumerate() {
+            let combo = i % (Pattern::COUNT + Pattern4::COUNT);
+            let own = i < Pattern::COUNT + Pattern4::COUNT;
+            let frozen = if own {
+                Pattern4::FFlex3x2
+            } else {
+                Pattern4::CBlock4Flex3
+            };
+            if combo >= Pattern::COUNT && combo - Pattern::COUNT >= frozen as usize {
+                *g = 0.0;
+            }
+        }
+        for i in 0..N {
+            m[i] = beta1 * m[i] + (1.0 - beta1) * grad[i];
+            v[i] = beta2 * v[i] + (1.0 - beta2) * grad[i] * grad[i];
+            let m_hat = m[i] / (1.0 - beta1.powi(epoch as i32));
+            let v_hat = v[i] / (1.0 - beta2.powi(epoch as i32));
+            params[i] -= lr * m_hat / (v_hat.sqrt() + 1e-12);
+        }
+        if epoch % 50 == 0 {
+            let (loss, acc) = policy_loss(&valid, &own, &opp, scale);
+            eprintln!("epoch {epoch}: validation loss {loss:.4}, top-1 {:.1}%", acc * 100.0);
+        }
+    }
+    let (own, opp) = expand(&params);
+    let (after, after_acc) = policy_loss(&valid, &own, &opp, scale);
+    eprintln!(
+        "validation loss {before:.4} -> {after:.4}, top-1 {:.1}% -> {:.1}%",
+        before_acc * 100.0,
+        after_acc * 100.0
+    );
+    eprintln!(
+        "own corrections {:?}",
+        params[..Pattern::COUNT + Pattern4::COUNT]
+            .iter()
+            .map(|x| x.round() as i32)
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "opponent corrections {:?}",
+        params[Pattern::COUNT + Pattern4::COUNT..]
+            .iter()
+            .map(|x| x.round() as i32)
+            .collect::<Vec<_>>()
+    );
+    Weights {
+        policy_own: own.iter().map(|x| x.round() as i32).collect(),
+        policy_opp: opp.iter().map(|x| x.round() as i32).collect(),
+        ..start.clone()
+    }
 }
