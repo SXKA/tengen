@@ -48,11 +48,25 @@ jobs:
           # the engine's file system before it starts.
           mkdir -p rapfi/Networks
           : > rapfi/Networks/wasm_preloads.txt
+          # The page writes those files itself, so it needs the file system.
+          python3 - <<'PY'
+          path = "rapfi/Rapfi/CMakeLists.txt"
+          text = open(path).read()
+          old = "EXPORTED_RUNTIME_METHODS=\\\"['cwrap']\\\""
+          assert old in text, "EXPORTED_RUNTIME_METHODS not found"
+          open(path, "w").write(text.replace(old, "EXPORTED_RUNTIME_METHODS=\\\"['cwrap','FS']\\\""))
+          PY
+          # Emscripten's libc++ includes fewer headers from other headers than
+          # the native toolchains do, so some of Rapfi's includes are missing
+          # there; include the common ones everywhere.
+          printf '#include <%s>\n' algorithm array cmath cstdint cstring functional iterator limits \
+            memory optional string string_view tuple utility vector > "$PWD/std-headers.h"
           for threads in single multi; do
             flag=OFF
             [ "$threads" = single ] && flag=ON
             emcmake cmake -S rapfi/Rapfi -B "build-$threads" -DCMAKE_BUILD_TYPE=Release \
-              -DNO_COMMAND_MODULES=ON -DNO_MULTI_THREADING=$flag -DUSE_WASM_SIMD=ON
+              -DNO_COMMAND_MODULES=ON -DNO_MULTI_THREADING=$flag -DUSE_WASM_SIMD=ON \
+              -DCMAKE_CXX_FLAGS="-include $PWD/std-headers.h"
             cmake --build "build-$threads" -j "$(nproc)"
           done
           ls -la build-*/rapfi-*
