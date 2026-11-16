@@ -162,6 +162,9 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
 pub fn generate_fours(board: &Board, moves: &mut Vec<ScoredMove>) {
     moves.clear();
     let us = board.side_to_move();
+    if board.p4_count_at_least(us, Pattern4::EBlock4) == 0 {
+        return;
+    }
     let values = CellValues::standard();
     for pos in board.candidates() {
         let p4 = board.p4(pos, us);
