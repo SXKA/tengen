@@ -201,6 +201,9 @@ fn is_quiet(board: &Board) -> bool {
     board.p4_count_at_least(us, Pattern4::CBlock4Flex3) == 0 && board.p4_count_at_least(them, Pattern4::BFlex4) == 0
 }
 
+/// Node budget of the shallow search that filters out tactical positions.
+const FILTER_NODES: u64 = 20_000;
+
 /// Threads for loading and fitting.
 fn threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
@@ -285,15 +288,22 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
         let Some((size, outcome, moves)) = parse_game(line) else {
             return (index, samples);
         };
-        let limits = Limits::depth(1);
+        // The filter search is capped: a few positions with many fours on
+        // both sides make the threat search explode, and those are not
+        // quiet anyway.
+        let limits = Limits {
+            depth: Some(1),
+            nodes: Some(FILTER_NODES),
+            ..Limits::default()
+        };
         let mut board = Board::new(size);
         for (ply, &pos) in moves.iter().enumerate() {
             board.play(pos);
             if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
                 continue;
             }
-            let value = ENGINE.with(|e| e.borrow_mut().search(&board, &limits, |_| {}).value);
-            if value.abs() >= MATE_BOUND {
+            let result = ENGINE.with(|e| e.borrow_mut().search(&board, &limits, |_| {}));
+            if result.value.abs() >= MATE_BOUND || result.nodes >= FILTER_NODES {
                 tactical.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
