@@ -3,8 +3,8 @@ name: Tune
 # Self-play games on several machines at once, fit the evaluation and the
 # move-ordering tables to them, and check the fitted weights against the
 # current ones with an SPRT. Start it from the Actions tab. The weights and
-# games are attached to the run; adopt the weights by copying weights.txt to
-# crates/engine/src/weights.txt.
+# games are attached to the run, and the weights are also pushed to the
+# branch tune/<run id>, ready for a pull request.
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +19,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 env:
@@ -99,6 +99,14 @@ jobs:
             --base artifacts/pbrain-tengen \
             --games 4000 --turn-ms 100 --sprt 0,10 \
             --concurrency "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Push the weights to a branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "tune/${{ github.run_id }}"
+          cp weights.txt crates/engine/src/weights.txt
+          git commit -am "Evaluation and move-ordering weights from Tune run ${{ github.run_id }}"
+          git push origin "tune/${{ github.run_id }}"
       - uses: actions/upload-artifact@v7
         with:
           name: tuning
