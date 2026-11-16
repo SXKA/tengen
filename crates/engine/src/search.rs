@@ -830,6 +830,10 @@ impl<'a> Worker<'a> {
         let mut quiets = [Pos::NONE; 32];
         let mut quiet_count = 0;
         let lmp_limit = (3 + depth * depth) / (2 - improving as i32);
+        // Fail-high reduction: a cut node whose static evaluation is far
+        // above beta will most likely fail high anyway, so quiet moves are
+        // searched a ply shallower.
+        let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + 20 * depth;
 
         for (index, m) in list.iter().enumerate() {
             let move_count = index as i32 + 1;
@@ -849,7 +853,8 @@ impl<'a> Worker<'a> {
             }
 
             let extension = (single_reply && ply < 2 * self.root_depth as usize) as i32;
-            let new_depth = depth - 1 + extension;
+            let fail_high_reduction = (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32;
+            let new_depth = depth - 1 + extension - fail_high_reduction;
 
             self.board.play(pos);
             let mut v;
