@@ -25,6 +25,19 @@ const PAD: usize = 5;
 const STRIDE: usize = 32;
 /// Number of cell slots, including the unused columns past the stride.
 pub const CELLS: usize = STRIDE * MAX_SIZE;
+/// Rows of off-board cells above and below the board in [`Board`]'s cell
+/// array, so that walking up to 5 steps from any cell never leaves it (a
+/// step left from column 0 lands at the end of the row above, hence one row
+/// more than 5).
+const PAD_ROWS: usize = 6;
+/// Cell array length, padding included.
+const SLOTS: usize = STRIDE * (MAX_SIZE + 2 * PAD_ROWS);
+
+/// Index of `pos` in the padded cell array.
+#[inline]
+fn slot(pos: Pos) -> usize {
+    pos.index() + STRIDE * PAD_ROWS
+}
 /// Lines per direction (diagonals have `2 * size - 1`).
 const LINES: usize = 2 * MAX_SIZE - 1;
 /// Step between neighbouring cells for each direction, in [`Pos`] units.
@@ -158,6 +171,8 @@ impl Iterator for AreaCells {
 const EMPTY: u8 = 0;
 const BLACK: u8 = 1;
 const WALL: u8 = 3;
+/// Off the board: never empty, never updated.
+const OFF: u8 = 4;
 
 /// Pattern of a line-table entry (low four bits; see [`LINE_FORBIDDEN`]).
 const PATTERN_OF: [Pattern; 16] = {
@@ -226,6 +241,11 @@ const NEAR: [(i8, i8); 32] = {
 struct Undo {
     pos: Pos,
     area: Area,
+    /// Length of [`Board::journal`] before the move.
+    journal_len: u32,
+    value: [i32; 2],
+    value_late: [i32; 2],
+    p4_count: [[u16; Pattern4::COUNT]; 2],
 }
 
 /// Zobrist keys, derived deterministically so every board agrees.
@@ -275,7 +295,8 @@ fn zobrist() -> &'static Zobrist {
 pub struct Board {
     size: usize,
     rule: Rule,
-    cells: Box<[Cell; CELLS]>,
+    /// Per-cell state, with off-board cells around the board.
+    cells: Box<[Cell; SLOTS]>,
     /// Stones per color, direction and line, bit `pos + 5`.
     lines: [[[u32; LINES]; 4]; 2],
     /// Stones of neither color, the same way.
@@ -290,6 +311,9 @@ pub struct Board {
     values: &'static eval::CellValues,
     walls_placed: usize,
     history: Vec<Undo>,
+    /// Cells as they were before the moves in `history` changed them, so
+    /// undoing a move copies them back instead of recomputing patterns.
+    journal: Vec<(u16, Cell)>,
     area: Area,
     hash: u64,
     /// Sum of [`eval::CellValues`] over empty cells, per color.
@@ -315,7 +339,12 @@ impl Board {
         let mut board = Board {
             size,
             rule,
-            cells: Box::new([EMPTY_CELL; CELLS]),
+            cells: Box::new(
+                [Cell {
+                    stone: OFF,
+                    ..EMPTY_CELL
+                }; SLOTS],
+            ),
             lines: [[[0; LINES]; 4]; 2],
             walls: [[0; LINES]; 4],
             edges: [[0; LINES]; 4],
@@ -324,6 +353,7 @@ impl Board {
             values: eval::CellValues::for_rule(rule),
             walls_placed: 0,
             history: Vec::with_capacity(size * size),
+            journal: Vec::with_capacity(40 * size * size),
             area: Area::empty(),
             hash: zobrist().rule[rule.index()],
             value: [0; 2],
@@ -344,6 +374,7 @@ impl Board {
         let tables = Tables::get();
         for y in 0..size {
             for x in 0..size {
+                board.cells[slot(Pos::new(x, y))].stone = EMPTY;
                 board.refresh_cell(Pos::new(x, y), tables);
             }
         }
@@ -400,7 +431,7 @@ impl Board {
     /// The stone on `pos`, if it belongs to a player.
     #[inline]
     pub fn stone(&self, pos: Pos) -> Option<Color> {
-        match self.cells[pos.index()].stone {
+        match self.cells[slot(pos)].stone {
             1 => Some(Color::Black),
             2 => Some(Color::White),
             _ => None,
@@ -411,19 +442,19 @@ impl Board {
     /// [`Board::place_wall`]).
     #[inline]
     pub fn is_wall(&self, pos: Pos) -> bool {
-        self.contains(pos) && self.cells[pos.index()].stone == WALL
+        self.contains(pos) && self.cells[slot(pos)].stone == WALL
     }
 
     /// Whether `pos` is on the board and empty.
     #[inline]
     pub fn is_empty(&self, pos: Pos) -> bool {
-        self.contains(pos) && self.cells[pos.index()].stone == EMPTY
+        self.contains(pos) && self.cells[slot(pos)].stone == EMPTY
     }
 
     /// Whether `pos` is empty and close enough to a stone to be worth playing.
     #[inline]
     pub fn is_candidate(&self, pos: Pos) -> bool {
-        let cell = &self.cells[pos.index()];
+        let cell = &self.cells[slot(pos)];
         cell.stone == 0 && cell.near > 0
     }
 
@@ -461,13 +492,13 @@ impl Board {
     /// Pattern a stone of `color` would form on `pos` along `dir`.
     #[inline]
     pub fn pattern(&self, pos: Pos, color: Color, dir: usize) -> Pattern {
-        self.cells[pos.index()].pattern[color.index()][dir]
+        self.cells[slot(pos)].pattern[color.index()][dir]
     }
 
     /// Pattern code of `pos` for `color`.
     #[inline]
     pub fn pcode(&self, pos: Pos, color: Color) -> PatternCode {
-        self.cells[pos.index()].pcode[color.index()]
+        self.cells[slot(pos)].pcode[color.index()]
     }
 
     /// What a stone of `color` would form on `pos` (empty cells only).
@@ -476,7 +507,7 @@ impl Board {
     /// legal double three; see [`Board::is_forbidden`].
     #[inline]
     pub fn p4(&self, pos: Pos, color: Color) -> Pattern4 {
-        self.cells[pos.index()].p4[color.index()]
+        self.cells[slot(pos)].p4[color.index()]
     }
 
     /// The direction in which a stone of `color` on `pos` would complete a
@@ -497,7 +528,7 @@ impl Board {
         if !self.renju || !self.is_empty(pos) {
             return false;
         }
-        let cell = self.cells[pos.index()];
+        let cell = self.cells[slot(pos)];
         if cell.p4[0] != Pattern4::Forbidden {
             return false;
         }
@@ -532,7 +563,7 @@ impl Board {
         for side in [-1isize, 1] {
             for k in 1..=4 {
                 let Some(q) = self.step(pos, dir, side * k) else { break };
-                match self.cells[q.index()].stone {
+                match self.cells[slot(q)].stone {
                     BLACK => continue,
                     EMPTY => {
                         if self.pattern(q, Color::Black, dir) == Pattern::F4 && !self.is_forbidden(q) {
@@ -630,25 +661,52 @@ impl Board {
         Pos::new(self.size / 2, self.size / 2)
     }
 
+    /// What undoing the next move (or pass) restores.
+    fn undo_record(&self, pos: Pos) -> Undo {
+        Undo {
+            pos,
+            area: self.area,
+            journal_len: self.journal.len() as u32,
+            value: self.value,
+            value_late: self.value_late,
+            p4_count: self.p4_count,
+        }
+    }
+
     /// Place a stone for the side to move on an empty cell.
     pub fn play(&mut self, pos: Pos) {
         debug_assert!(self.is_empty(pos), "illegal move {pos:?}");
         let color = self.side_to_move();
-        self.history.push(Undo { pos, area: self.area });
+        self.history.push(self.undo_record(pos));
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
-        self.set_stone(pos, color.index() as u8 + 1);
+        self.place::<true>(pos, color.index() as u8 + 1);
         self.update_near(pos, 1);
         self.extend_area(pos);
     }
 
-    /// Take back the last move.
+    /// Take back the last move: copy back the cells it changed and the
+    /// totals from before it. The emptied cell's own patterns were left
+    /// as they were while it was occupied, which is right again now.
     pub fn undo(&mut self) {
-        let Undo { pos, area } = self.history.pop().expect("no move to undo");
+        let undo = self.history.pop().expect("no move to undo");
+        let pos = undo.pos;
         let color = self.side_to_move();
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
-        self.set_stone(pos, EMPTY);
+        // Near counts first: the journal holds them as they were.
         self.update_near(pos, -1);
-        self.area = area;
+        while self.journal.len() > undo.journal_len as usize {
+            let (i, cell) = self.journal.pop().expect("journal entry");
+            self.cells[i as usize] = cell;
+        }
+        for dir in 0..4 {
+            let (line, at) = self.line_of(pos, dir);
+            self.lines[color.index()][dir][line] ^= 1u32 << (at + PAD);
+        }
+        self.cells[slot(pos)].stone = EMPTY;
+        self.value = undo.value;
+        self.value_late = undo.value_late;
+        self.p4_count = undo.p4_count;
+        self.area = undo.area;
     }
 
     /// Put a stone of neither player on an empty cell. In a continuous game
@@ -665,10 +723,7 @@ impl Board {
     /// Pass the turn without playing, for null-move style probes. Undo with
     /// [`Board::undo_pass`].
     pub fn pass(&mut self) {
-        self.history.push(Undo {
-            pos: Pos::NONE,
-            area: self.area,
-        });
+        self.history.push(self.undo_record(Pos::NONE));
         self.hash ^= zobrist().side;
     }
 
@@ -761,7 +816,7 @@ impl Board {
     /// Remove an empty cell's contribution to the running totals.
     #[inline]
     fn detach(&mut self, pos: Pos, values: &eval::CellValues) {
-        let cell = self.cells[pos.index()];
+        let cell = self.cells[slot(pos)];
         if cell.stone == 0 {
             for c in 0..2 {
                 self.value[c] -= values.value(cell.pcode[c]);
@@ -774,7 +829,7 @@ impl Board {
     /// Add an empty cell's contribution to the running totals.
     #[inline]
     fn attach(&mut self, pos: Pos, values: &eval::CellValues) {
-        let cell = self.cells[pos.index()];
+        let cell = self.cells[slot(pos)];
         if cell.stone == 0 {
             for c in 0..2 {
                 self.value[c] += values.value(cell.pcode[c]);
@@ -790,7 +845,7 @@ impl Board {
         let (patterns, flags) = self.compute_patterns(pos, tables);
         let pcode = patterns.map(|p| tables.pcode(p));
         let p4 = [0, 1].map(|c| self.combine(c, pcode[c], flags[c], tables));
-        let cell = &mut self.cells[pos.index()];
+        let cell = &mut self.cells[slot(pos)];
         cell.pattern = patterns;
         cell.flags = flags;
         cell.pcode = pcode;
@@ -813,9 +868,16 @@ impl Board {
     /// Put a stone (code 1 to 3) on an empty cell, or empty an occupied one
     /// (code 0), and update every cell whose patterns depend on it.
     fn set_stone(&mut self, pos: Pos, stone: u8) {
+        self.place::<false>(pos, stone);
+    }
+
+    /// [`Board::set_stone`], saving every changed cell to the journal first
+    /// when `JOURNAL`.
+    #[inline]
+    fn place<const JOURNAL: bool>(&mut self, pos: Pos, stone: u8) {
         let tables = Tables::get();
         let values = self.values;
-        let old = self.cells[pos.index()].stone;
+        let old = self.cells[slot(pos)].stone;
         debug_assert!((old == EMPTY) != (stone == EMPTY), "{pos:?}: {old} -> {stone}");
         if old == EMPTY {
             self.detach(pos, values);
@@ -829,7 +891,7 @@ impl Board {
                 _ => self.lines[1][dir][line] ^= bit,
             }
         }
-        self.cells[pos.index()].stone = stone;
+        self.cells[slot(pos)].stone = stone;
         // An occupied cell's patterns are never read and go stale; bring them
         // up to date when it is emptied again.
         if stone == EMPTY {
@@ -839,29 +901,35 @@ impl Board {
 
         // Only the patterns along the line through `pos` change.
         match self.large {
-            None => self.update_lines::<false>(pos, tables, values),
-            Some(_) => self.update_lines::<true>(pos, tables, values),
+            None => self.update_lines::<false, JOURNAL>(pos, tables, values),
+            Some(_) => self.update_lines::<true, JOURNAL>(pos, tables, values),
         }
     }
 
     /// Update the empty cells within reach of `pos` along its four lines;
     /// `LARGE` for the 11-cell tables.
     #[inline]
-    fn update_lines<const LARGE: bool>(&mut self, pos: Pos, tables: &Tables, values: &eval::CellValues) {
+    fn update_lines<const LARGE: bool, const JOURNAL: bool>(
+        &mut self,
+        pos: Pos,
+        tables: &Tables,
+        values: &eval::CellValues,
+    ) {
         let reach = if LARGE { 5 } else { 4 };
         for (dir, delta) in DELTA.into_iter().enumerate() {
             for side in [-1isize, 1] {
-                let mut q = pos.index() as isize;
+                let mut q = slot(pos) as isize;
                 for _ in 0..reach {
                     q += side * delta;
-                    let Some(next) = self.on_board(q) else { break };
-                    if self.cells[next.index()].stone != 0 {
+                    // Off-board cells, padding included, are never empty.
+                    if self.cells[q as usize].stone != EMPTY {
                         continue;
                     }
+                    let next = Pos((q as usize - slot(Pos(0))) as u16);
                     if LARGE {
-                        self.update_direction(next, dir, tables, values);
+                        self.update_direction::<JOURNAL>(next, dir, tables, values);
                     } else {
-                        self.update_direction_small(next, dir, tables, values);
+                        self.update_direction_small::<JOURNAL>(next, dir, tables, values);
                     }
                 }
             }
@@ -871,14 +939,28 @@ impl Board {
     /// [`Board::update_direction`] for the freestyle table, which has no
     /// flags and no forbidden moves.
     #[inline]
-    fn update_direction_small(&mut self, pos: Pos, dir: usize, tables: &Tables, values: &eval::CellValues) {
+    fn update_direction_small<const JOURNAL: bool>(
+        &mut self,
+        pos: Pos,
+        dir: usize,
+        tables: &Tables,
+        values: &eval::CellValues,
+    ) {
         let (line, at) = self.line_of(pos, dir);
         let black = self.lines[0][dir][line] >> (at + 1);
         let white = self.lines[1][dir][line] >> (at + 1);
         let block = (self.edges[dir][line] | self.walls[dir][line]) >> (at + 1);
         let new = [tables.line(black, white | block), tables.line(white, black | block)];
+        let i = slot(pos);
+        let old = self.cells[i];
+        if old.pattern[0][dir] == new[0] && old.pattern[1][dir] == new[1] {
+            return;
+        }
+        if JOURNAL {
+            self.journal.push((i as u16, old));
+        }
         for (c, &pattern) in new.iter().enumerate() {
-            let cell = &mut self.cells[pos.index()];
+            let cell = &mut self.cells[i];
             if cell.pattern[c][dir] == pattern {
                 continue;
             }
@@ -900,12 +982,29 @@ impl Board {
     /// totals. Often a distant stone changes nothing, and then nothing else
     /// is looked up.
     #[inline]
-    fn update_direction(&mut self, pos: Pos, dir: usize, tables: &Tables, values: &eval::CellValues) {
+    fn update_direction<const JOURNAL: bool>(
+        &mut self,
+        pos: Pos,
+        dir: usize,
+        tables: &Tables,
+        values: &eval::CellValues,
+    ) {
         let new = self.entries(pos, dir, tables);
+        if JOURNAL {
+            let old = &self.cells[slot(pos)];
+            let same = |c: usize| {
+                old.pattern[c][dir] == PATTERN_OF[(new[c] & 0x0f) as usize]
+                    && old.flags[c] & (1 << dir) == ((new[c] & LINE_FORBIDDEN != 0) as u8) << dir
+            };
+            if same(0) && same(1) {
+                return;
+            }
+            self.journal.push((slot(pos) as u16, *old));
+        }
         for (c, &entry) in new.iter().enumerate() {
             let pattern = PATTERN_OF[(entry & 0x0f) as usize];
             let flag = ((entry & LINE_FORBIDDEN != 0) as u8) << dir;
-            let cell = &mut self.cells[pos.index()];
+            let cell = &mut self.cells[slot(pos)];
             if cell.pattern[c][dir] == pattern && cell.flags[c] & (1 << dir) == flag {
                 continue;
             }
@@ -914,7 +1013,7 @@ impl Board {
             let (old_code, old_p4, flags) = (cell.pcode[c], cell.p4[c], cell.flags[c]);
             let code = tables.pcode(cell.pattern[c]);
             let p4 = self.combine(c, code, flags, tables);
-            let cell = &mut self.cells[pos.index()];
+            let cell = &mut self.cells[slot(pos)];
             cell.pcode[c] = code;
             cell.p4[c] = p4;
             self.value[c] += values.value(code) - values.value(old_code);
@@ -924,26 +1023,14 @@ impl Board {
         }
     }
 
-    /// `q` as a board cell if it is on the board. Every step changes the
-    /// column by at most one, so leaving the board always lands in a padding
-    /// column (`x >= size`), a row past the last, or a negative index.
-    #[inline]
-    fn on_board(&self, q: isize) -> Option<Pos> {
-        if q < 0 || q as usize >= CELLS {
-            return None;
-        }
-        let p = Pos(q as u16);
-        (p.x() < self.size && p.y() < self.size).then_some(p)
-    }
-
+    /// Count `delta` more stones near the cells around `pos`. Steps off the
+    /// board land on padding (columns past the side wrap into the padding
+    /// columns of the next or previous row), whose counts are never read.
     fn update_near(&mut self, pos: Pos, delta: i8) {
-        let n = self.size as i32;
+        let center = slot(pos) as isize;
         for &(dx, dy) in NEAR.iter() {
-            let (x, y) = (pos.x() as i32 + dx as i32, pos.y() as i32 + dy as i32);
-            if (0..n).contains(&x) && (0..n).contains(&y) {
-                let cell = &mut self.cells[Pos::new(x as usize, y as usize).index()];
-                cell.near = cell.near.wrapping_add_signed(delta);
-            }
+            let cell = &mut self.cells[(center + dy as isize * STRIDE as isize + dx as isize) as usize];
+            cell.near = cell.near.wrapping_add_signed(delta);
         }
     }
 
@@ -971,7 +1058,7 @@ impl std::fmt::Display for Board {
             write!(f, "{:2}", y + 1)?;
             for x in 0..self.size {
                 let p = Pos::new(x, y);
-                let mark = match self.cells[p.index()].stone {
+                let mark = match self.cells[slot(p)].stone {
                     BLACK => 'X',
                     EMPTY => '.',
                     WALL => '#',
@@ -1027,8 +1114,8 @@ pub(crate) mod tests {
                 if board.is_empty(p) {
                     let t = Tables::get();
                     let (patterns, flags) = fresh.compute_patterns(p, t);
-                    assert_eq!(patterns, board.cells[p.index()].pattern, "{p:?}");
-                    assert_eq!(flags, board.cells[p.index()].flags, "{p:?}");
+                    assert_eq!(patterns, board.cells[slot(p)].pattern, "{p:?}");
+                    assert_eq!(flags, board.cells[slot(p)].flags, "{p:?}");
                 }
             }
         }
@@ -1048,7 +1135,7 @@ pub(crate) mod tests {
                 let (line, at) = self.line_of(pos, dir);
                 self.lines[color.index()][dir][line] |= 1 << (at + PAD);
             }
-            self.cells[pos.index()].stone = color.index() as u8 + 1;
+            self.cells[slot(pos)].stone = color.index() as u8 + 1;
         }
     }
 
