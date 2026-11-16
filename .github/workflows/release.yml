@@ -76,7 +76,11 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: tengen-*.*
+          # Only the archives: the staging folder's name also contains dots.
+          path: |
+            tengen-*.tar.gz
+            tengen-*.zip
+          if-no-files-found: error
 
   publish:
     needs: [tag, build]
@@ -94,11 +98,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum tengen-* > SHA256SUMS
+          files=$(ls tengen-*.tar.gz tengen-*.zip)
+          sha256sum $files > SHA256SUMS
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" tengen-* SHA256SUMS --clobber
+            gh release upload "$TAG" $files SHA256SUMS --clobber
           else
-            gh release create "$TAG" tengen-* SHA256SUMS \
+            gh release create "$TAG" $files SHA256SUMS \
               --title "Tengen ${TAG#v}" \
               --notes-file ../.github/release-notes.md \
               --verify-tag
