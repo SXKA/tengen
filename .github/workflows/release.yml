@@ -1,8 +1,15 @@
 name: Release
 
+# Push a tag such as v2.0.1, or run this workflow from the Actions tab with
+# the version: it then tags the head of the branch it runs on.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to create, such as v2.0.1
+        required: true
 
 permissions:
   contents: write
@@ -11,10 +18,31 @@ env:
   CARGO_TERM_COLOR: always
   # Pinned so new lints or codegen changes arrive in deliberate updates.
   RUST_VERSION: "1.97.0"
+  TAG: ${{ inputs.version || github.ref_name }}
 
 jobs:
+  tag:
+    name: Tag
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: tag
+        name: Create the tag if it does not exist
+        run: |
+          case "$TAG" in v[0-9]*) ;; *) echo "The version must look like v1.2.3"; exit 1 ;; esac
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git tag "$TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+          echo "sha=$(git rev-parse "$TAG^{commit}")" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: tag
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +54,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -34,7 +64,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="tengen-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="tengen-${TAG}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/pbrain-tengen${{ matrix.exe }}" "$name/"
           cp LICENSE README.md "$name/"
@@ -49,10 +79,12 @@ jobs:
           path: tengen-*.*
 
   publish:
-    needs: build
+    needs: [tag, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.tag.outputs.sha }}
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -63,7 +95,11 @@ jobs:
         run: |
           cd dist
           sha256sum tengen-* > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" tengen-* SHA256SUMS \
-            --title "Tengen ${GITHUB_REF_NAME}" \
-            --notes-file ../.github/release-notes.md \
-            --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" tengen-* SHA256SUMS --clobber
+          else
+            gh release create "$TAG" tengen-* SHA256SUMS \
+              --title "Tengen ${TAG#v}" \
+              --notes-file ../.github/release-notes.md \
+              --verify-tag
+          fi
