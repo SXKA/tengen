@@ -1,15 +1,16 @@
 name: Tune
 
-# Self-play games, fit the evaluation weights to their results, and check the
-# fitted weights against the current ones with an SPRT. Start it from the
-# Actions tab; the weights and games are attached to the run. Adopt the
-# weights by copying them to crates/engine/src/weights.txt.
+# Self-play games on several machines at once, fit the evaluation and the
+# move-ordering tables to them, and check the fitted weights against the
+# current ones with an SPRT. Start it from the Actions tab. The weights and
+# games are attached to the run; adopt the weights by copying weights.txt to
+# crates/engine/src/weights.txt.
 on:
   workflow_dispatch:
     inputs:
       games:
-        description: Self-play games
-        default: "20000"
+        description: Self-play games per machine (8 machines)
+        default: "5000"
       nodes:
         description: Nodes per move
         default: "20000"
@@ -19,31 +20,69 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned so new lints or codegen changes arrive in deliberate updates.
   RUST_VERSION: "1.97.0"
 
 jobs:
-  tune:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - run: cargo build --release -p tengen-piskvork -p tengen-arena
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: |
+            target/release/pbrain-tengen
+            target/release/tengen-arena
+            target/release/tengen-tune
+
+  selfplay:
+    needs: build
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
       - name: Self-play
-        run: target/release/tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} --seed "${{ github.run_id }}" --out games.txt
+        run: |
+          chmod +x tengen-tune
+          ./tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} \
+            --seed "${{ github.run_id }}${{ matrix.shard }}" --out games-${{ matrix.shard }}.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: games-${{ matrix.shard }}
+          path: games-${{ matrix.shard }}.txt
+
+  fit:
+    needs: selfplay
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
       - name: Fit
         run: |
-          target/release/tengen-tune fit --data games.txt --out weights.txt 2>&1 | tee fit.log
+          chmod +x artifacts/pbrain-tengen artifacts/tengen-arena artifacts/tengen-tune
+          cat artifacts/games-*.txt > games.txt
+          artifacts/tengen-tune fit --data games.txt --out eval.txt 2>&1 | tee fit.log
+          artifacts/tengen-tune fit-policy --data games.txt --weights eval.txt --out weights.txt 2>&1 | tee -a fit.log
           { echo '### Fit'; echo '```'; cat fit.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check against the current weights
         run: |
-          target/release/tengen-arena \
-            --new "target/release/pbrain-tengen --weights weights.txt" \
-            --base target/release/pbrain-tengen \
-            --games 2000 --turn-ms 100 --sprt 0,10 \
+          artifacts/tengen-arena \
+            --new "artifacts/pbrain-tengen --weights weights.txt" \
+            --base artifacts/pbrain-tengen \
+            --games 4000 --turn-ms 100 --sprt 0,10 \
             --concurrency "$(nproc)" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
