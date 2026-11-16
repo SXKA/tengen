@@ -15,3 +15,7 @@ path = "src/main.rs"
 [[bin]]
 name = "tengen-tune"
 path = "src/bin/tune.rs"
+
+[[bin]]
+name = "tengen-spsa"
+path = "src/bin/spsa.rs"

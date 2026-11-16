@@ -409,14 +409,135 @@ struct RootMove {
 fn reductions() -> &'static [[u8; 64]; 64] {
     static TABLE: OnceLock<[[u8; 64]; 64]> = OnceLock::new();
     TABLE.get_or_init(|| {
+        let p = params();
+        let (base, scale) = (p.lmr_base as f64 / 100.0, p.lmr_scale as f64 / 100.0);
         let mut t = [[0; 64]; 64];
         for (d, row) in t.iter_mut().enumerate().skip(1) {
             for (m, r) in row.iter_mut().enumerate().skip(1) {
-                *r = (0.6 + (d as f64).ln() * (m as f64).ln()) as u8;
+                *r = (base + scale * (d as f64).ln() * (m as f64).ln()).max(0.0) as u8;
             }
         }
         t
     })
+}
+
+/// Search constants that self-play tuning may change (see `tengen-spsa`).
+/// The defaults are the values the engine plays with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Params {
+    /// Reverse futility pruning: deepest depth, margin per ply, and how
+    /// much less margin an improving position needs.
+    pub rfp_depth: i32,
+    pub rfp_margin: i32,
+    pub rfp_improving: i32,
+    /// Razoring: deepest depth, base margin and margin per ply.
+    pub razor_depth: i32,
+    pub razor_base: i32,
+    pub razor_margin: i32,
+    /// Futility pruning of quiet moves: deepest depth, base margin and
+    /// margin per ply.
+    pub futility_depth: i32,
+    pub futility_base: i32,
+    pub futility_margin: i32,
+    /// Late move pruning starts after `lmp_base + depth²` moves.
+    pub lmp_base: i32,
+    /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`,
+    /// and history points per ply less.
+    pub lmr_base: i32,
+    pub lmr_scale: i32,
+    pub lmr_history: i32,
+    /// Fail-high reduction: static evaluation above beta by this much per
+    /// ply.
+    pub fail_high_margin: i32,
+    /// First aspiration window half-width.
+    pub aspiration: i32,
+}
+
+impl Default for Params {
+    fn default() -> Params {
+        Params {
+            rfp_depth: 7,
+            rfp_margin: 70,
+            rfp_improving: 30,
+            razor_depth: 3,
+            razor_base: 150,
+            razor_margin: 120,
+            futility_depth: 3,
+            futility_base: 120,
+            futility_margin: 100,
+            lmp_base: 3,
+            lmr_base: 60,
+            lmr_scale: 100,
+            lmr_history: 6000,
+            fail_high_margin: 20,
+            aspiration: 20,
+        }
+    }
+}
+
+impl Params {
+    /// Every parameter with its name, for parsing and printing.
+    fn fields(&mut self) -> [(&'static str, &mut i32); 15] {
+        [
+            ("rfp_depth", &mut self.rfp_depth),
+            ("rfp_margin", &mut self.rfp_margin),
+            ("rfp_improving", &mut self.rfp_improving),
+            ("razor_depth", &mut self.razor_depth),
+            ("razor_base", &mut self.razor_base),
+            ("razor_margin", &mut self.razor_margin),
+            ("futility_depth", &mut self.futility_depth),
+            ("futility_base", &mut self.futility_base),
+            ("futility_margin", &mut self.futility_margin),
+            ("lmp_base", &mut self.lmp_base),
+            ("lmr_base", &mut self.lmr_base),
+            ("lmr_scale", &mut self.lmr_scale),
+            ("lmr_history", &mut self.lmr_history),
+            ("fail_high_margin", &mut self.fail_high_margin),
+            ("aspiration", &mut self.aspiration),
+        ]
+    }
+
+    /// The defaults with `name=value` changes, comma-separated.
+    pub fn parse(text: &str) -> Result<Params, String> {
+        let mut params = Params::default();
+        for item in text.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (name, value) = item.split_once('=').ok_or(format!("{item}: expected name=value"))?;
+            let value: f64 = value.trim().parse().map_err(|e| format!("{item}: {e}"))?;
+            let mut fields = params.fields();
+            let slot = fields
+                .iter_mut()
+                .find(|(n, _)| *n == name.trim())
+                .ok_or(format!("unknown parameter {name}"))?;
+            *slot.1 = value.round() as i32;
+        }
+        Ok(params)
+    }
+
+    /// Names and values, as `parse` reads them.
+    pub fn to_text(mut self) -> String {
+        let fields = self.fields();
+        fields
+            .iter()
+            .map(|(n, v)| format!("{n}={v}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+static PARAMS: OnceLock<Params> = OnceLock::new();
+
+/// The search parameters in use.
+#[inline]
+pub fn params() -> &'static Params {
+    PARAMS.get_or_init(Params::default)
+}
+
+/// Use `params` for the rest of the process. Must come before the first
+/// search; fails afterwards.
+pub fn set_params(params: Params) -> Result<(), String> {
+    PARAMS
+        .set(params)
+        .map_err(|_| "search parameters are already in use".to_string())
 }
 
 const HISTORY_MAX: i32 = 16_384;
@@ -434,6 +555,8 @@ struct Worker<'a> {
     history: Box<[[i32; CELLS]; 2]>,
     killers: Vec<[Pos; 2]>,
     evals: Vec<Value>,
+    /// The search parameters, copied for quick access.
+    p: Params,
     pv: Vec<Vec<Pos>>,
     lists: Vec<Vec<ScoredMove>>,
     root_moves: Vec<RootMove>,
@@ -452,6 +575,7 @@ impl<'a> Worker<'a> {
             root_depth: 0,
             history: Box::new([[0; CELLS]; 2]),
             killers: vec![[Pos::NONE; 2]; plies],
+            p: *params(),
             evals: vec![0; plies],
             pv: (0..plies).map(|_| Vec::with_capacity(32)).collect(),
             lists: (0..plies).map(|_| Vec::with_capacity(128)).collect(),
@@ -562,7 +686,7 @@ impl<'a> Worker<'a> {
             self.root_depth = search_depth;
             self.seldepth = 0;
 
-            let mut delta = 20;
+            let mut delta = self.p.aspiration;
             let (mut alpha, mut beta) = if depth >= 4 && value.abs() < MATE_BOUND {
                 (value - delta, value + delta)
             } else {
@@ -784,11 +908,13 @@ impl<'a> Worker<'a> {
 
         if !PV && !in_threat && static_eval.abs() < MATE_BOUND {
             // Reverse futility: far above beta with shallow depth left.
-            if depth <= 7 && static_eval - (70 * depth - 30 * improving as i32) >= beta {
+            let p = &self.p;
+            if depth <= p.rfp_depth && static_eval - (p.rfp_margin * depth - p.rfp_improving * improving as i32) >= beta
+            {
                 return static_eval;
             }
             // Razoring: far below alpha, and no forcing win changes that.
-            if depth <= 3 && static_eval + 150 + 120 * depth <= alpha {
+            if depth <= p.razor_depth && static_eval + p.razor_base + p.razor_margin * depth <= alpha {
                 let v = self.qsearch(alpha, alpha + 1, ply, 0);
                 if v <= alpha {
                     return v;
@@ -835,11 +961,11 @@ impl<'a> Worker<'a> {
         let mut best_move = None;
         let mut quiets = [Pos::NONE; 32];
         let mut quiet_count = 0;
-        let lmp_limit = (3 + depth * depth) / (2 - improving as i32);
+        let lmp_limit = (self.p.lmp_base + depth * depth) / (2 - improving as i32);
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
-        let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + 20 * depth;
+        let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + self.p.fail_high_margin * depth;
 
         for (index, m) in list.iter().enumerate() {
             let move_count = index as i32 + 1;
@@ -853,7 +979,10 @@ impl<'a> Worker<'a> {
                     continue;
                 }
                 // Futility pruning of quiet moves near the leaves.
-                if depth <= 3 && static_eval + 120 + 100 * depth + m.score.min(400) / 4 <= alpha {
+                let p = &self.p;
+                if depth <= p.futility_depth
+                    && static_eval + p.futility_base + p.futility_margin * depth + m.score.min(400) / 4 <= alpha
+                {
                     continue;
                 }
             }
@@ -876,7 +1005,7 @@ impl<'a> Worker<'a> {
                     r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
                     r += cut_node as i32;
                     r -= PV as i32 + improving as i32;
-                    r -= self.history[us as usize][pos.index()] / 6000;
+                    r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
                     r = r.clamp(0, new_depth - 1);
                 }
                 v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);

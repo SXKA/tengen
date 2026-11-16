@@ -5,7 +5,8 @@
 //! `SWAP2BOARD` opening.
 //!
 //! Also runs `pbrain-tengen bench [depth]` to print the benchmark node count.
-//! `--weights FILE` replaces the built-in evaluation weights (for tuning).
+//! `--weights FILE` replaces the built-in evaluation weights, and
+//! `--params name=value,...` changes search parameters (both for tuning).
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
@@ -458,6 +459,15 @@ fn main() {
                 eprintln!("--weights {path}: {e}");
                 std::process::exit(2);
             }
+        }
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--params") {
+        let text = args.get(i + 1).cloned().unwrap_or_default();
+        let params = tengen_engine::search::Params::parse(&text);
+        if let Err(e) = params.and_then(tengen_engine::search::set_params) {
+            eprintln!("--params {text}: {e}");
+            std::process::exit(2);
         }
         args.drain(i..(i + 2).min(args.len()));
     }
