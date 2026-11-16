@@ -382,6 +382,28 @@ impl Board {
         self.area_cells().filter(|&p| self.is_candidate(p))
     }
 
+    /// The cell `k` steps from `pos` along `dir`, if on the board.
+    ///
+    /// Directions: 0 horizontal, 1 vertical, 2 diagonal (down-right) and 3
+    /// anti-diagonal (up-right).
+    #[inline]
+    pub fn step(&self, pos: Pos, dir: usize, k: isize) -> Option<Pos> {
+        const DX: [isize; 4] = [1, 0, 1, 1];
+        const DY: [isize; 4] = [0, 1, 1, -1];
+        let n = self.size as isize;
+        let x = pos.x() as isize + k * DX[dir];
+        let y = pos.y() as isize + k * DY[dir];
+        ((0..n).contains(&x) && (0..n).contains(&y)).then(|| Pos::new(x as usize, y as usize))
+    }
+
+    /// The first empty cell where `color` would make five, if any.
+    pub fn five_point(&self, color: Color) -> Option<Pos> {
+        if self.p4_count(color, Pattern4::AFive) == 0 {
+            return None;
+        }
+        self.area_cells().find(|&p| self.is_empty(p) && self.p4(p, color) == Pattern4::AFive)
+    }
+
     /// The board center, the usual first move.
     pub fn center(&self) -> Pos {
         Pos::new(self.size / 2, self.size / 2)
