@@ -9,10 +9,12 @@
 //! `selfplay` plays fast in-process games from balanced random openings.
 //! `fit` replays them, keeps positions without immediate tactics, and fits
 //! the evaluation so that `sigmoid(eval / SCALE)` predicts each game's result
-//! for the side to move. It first fits the factored model (per line pattern
-//! and combination), then refines every pattern code on its own, pulled
-//! toward the factored values; one game in ten is held out to choose how
-//! strongly. `init` writes the untuned factored defaults.
+//! for the side to move, using the factored model (per line pattern and
+//! combination). With `--per-code` it then refines every pattern code on its
+//! own, pulled toward the factored values, and keeps the refinement if it
+//! predicts the held-out games (one in ten) better. That refinement has
+//! overfitted so far: on 3,800 games it lost about 24 Elo where the factored
+//! fit gained 23. `init` writes the untuned factored defaults.
 
 use std::io::{BufRead, BufWriter, Write};
 use std::sync::Mutex;
@@ -28,7 +30,7 @@ use tengen_engine::{Board, Color, Engine, Limits};
 
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] --out FILE [--weights FILE]
-  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--factored] --out FILE
+  tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] --out FILE
   tengen-tune init --out FILE";
 
 fn main() {
@@ -66,8 +68,8 @@ fn main() {
         Some("fit") => {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 2000) as usize;
-            let factored_only = args.iter().any(|a| a == "--factored");
-            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, factored_only);
+            let per_code = args.iter().any(|a| a == "--per-code");
+            let tuned = fit(&data.split(',').collect::<Vec<_>>(), epochs, per_code);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("init") => {
@@ -345,9 +347,9 @@ fn optimize(model: &dyn Model, samples: &[Sample], start: &[f64], prior: &[f64],
     p
 }
 
-/// Fit the factored model, then the per-code tables, and keep whichever
-/// predicts the held-out games better.
-fn fit(paths: &[&str], epochs: usize, factored_only: bool) -> Weights {
+/// Fit the factored model and, with `per_code`, the per-code tables, keeping
+/// whichever predicts the held-out games better.
+fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
     let (train, valid) = load(paths);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
@@ -397,7 +399,7 @@ fn fit(paths: &[&str], epochs: usize, factored_only: bool) -> Weights {
         tuned_factored.pattern, tuned_factored.pattern4
     );
 
-    let strengths: &[f64] = if factored_only { &[] } else { &[1e-7, 1e-8, 1e-9] };
+    let strengths: &[f64] = if per_code { &[1e-7, 1e-8, 1e-9] } else { &[] };
     for &l2 in strengths {
         let p = optimize(&codes, &train, &prior, &prior, l2, epochs);
         let rounded = round(&p);
