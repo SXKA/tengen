@@ -13,6 +13,11 @@ Tengen is a gomoku and renju engine written in Rust. It plays in the browser, co
 
 - **In the browser**: open [tengen-bice.vercel.app](https://tengen-bice.vercel.app). The engine runs locally in a
   Web Worker; nothing is sent to a server.
+- **Watch engines play**: the site's *Watch engines* mode sets two engines against each other, each in its own
+  worker in your browser: Tengen, [Rapfi](https://github.com/dhbloo/rapfi) (with its NNUE, downloaded when chosen,
+  or its classical evaluation), [SlowRenju](https://github.com/wind23/SlowRenju) by Tianyi Hao and Pela by Petr
+  Laštovička from [Piskvork](https://github.com/plastovicka/Piskvork). Stones can show their move numbers in both
+  modes.
 - **In Piskvork or another Gomocup manager**: download `pbrain-tengen` for your system from
   [Releases](https://github.com/SXKA/tengen/releases/latest) and add it as a brain. It supports boards from 5×5 to
   20×20 and every rule of the Piskvork protocol.
@@ -105,6 +110,11 @@ falling back to the freestyle `weights.txt`). The **Versus Rapfi** workflow buil
 [Rapfi](https://github.com/dhbloo/rapfi) and plays a fixed match against it, with its NNUE and with its classical
 evaluation, to measure the distance to the strongest open-source engine.
 
+The other engines on the website are built by two manual workflows, which push the files to a branch for a pull
+request: **Rapfi WASM** compiles Rapfi with Emscripten, and **Classic engines WASM** compiles Pela and SlowRenju,
+which were written for Windows, with the compatibility layer in `engines/`. That layer is tested natively too:
+`sh engines/build.sh pela PATH_TO_PISKVORK out native` builds a `pbrain-pela` that speaks the Piskvork protocol.
+
 ## Layout
 
 | Path | Contents |
@@ -114,6 +124,8 @@ evaluation, to measure the distance to the strongest open-source engine.
 | `crates/arena` | `tengen-arena` (matches and SPRT) and `tengen-tune` (self-play and tuning) |
 | `crates/wasm` | The WebAssembly builds (single- and multi-threaded) with a plain C ABI |
 | `web` | The browser app: React, with the engine in a Web Worker |
+| `web/public/engines` | The other engines for engine matches, built by workflows, with their notices |
+| `engines` | What Pela and SlowRenju need to build outside Windows: a protocol front end, shims, a patch |
 
 ## Acknowledgements
 
@@ -123,3 +135,7 @@ Tengen's pattern vocabulary, evaluation structure and search techniques are mode
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+The website also serves builds of other engines under their own licenses: Rapfi (GPL-3.0) with networks from
+[rapfi-networks](https://github.com/dhbloo/rapfi-networks) (CC0), SlowRenju (GPL-3.0) and Pela (GPL). Each
+folder in `web/public/engines` has a `NOTICE.md` naming the exact source it was built from.
