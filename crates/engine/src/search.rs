@@ -502,7 +502,7 @@ impl<'a> Worker<'a> {
             let elapsed = self.shared.elapsed();
             on_info(&Info {
                 depth: search_depth,
-                seldepth: self.seldepth,
+                seldepth: self.seldepth.max(search_depth as usize),
                 value,
                 nodes: self.total_nodes(),
                 elapsed_ms: elapsed,

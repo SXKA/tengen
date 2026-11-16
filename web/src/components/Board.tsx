@@ -189,7 +189,16 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
           const y = at(Math.floor(i / size));
           return (
             <g key={i} className="threat">
-              {b >= 8 && <rect x={x - 5} y={y - 5} width="10" height="10" transform={`rotate(45 ${x} ${y})`} className="threat-black" />}
+              {b >= 8 && (
+                <rect
+                  x={x - 5}
+                  y={y - 5}
+                  width="10"
+                  height="10"
+                  transform={`rotate(45 ${x} ${y})`}
+                  className="threat-black"
+                />
+              )}
               {w >= 8 && (
                 <rect
                   x={x - 4.5 + (b >= 8 ? 8 : 0)}
@@ -208,16 +217,18 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
         const { x, y } = unpack(m);
         const color = i % 2 === 0 ? "slate" : "shell";
         return (
-          <g key={m} className={i === moves.length - 1 ? "stone stone-new" : "stone"} style={{ transformOrigin: `${at(x)}px ${at(y)}px` }}>
+          <g
+            key={m}
+            className={i === moves.length - 1 ? "stone stone-new" : "stone"}
+            style={{ transformOrigin: `${at(x)}px ${at(y)}px` }}
+          >
             <circle cx={at(x) + 1.6} cy={at(y) + 2.6} r={C * 0.45} className="stone-shadow" filter="url(#shadow)" />
             <circle cx={at(x)} cy={at(y)} r={C * 0.465} fill={`url(#${color})`} />
           </g>
         );
       })}
 
-      {last !== null && (
-        <circle cx={at(unpack(last).x)} cy={at(unpack(last).y)} r={C * 0.11} className="last-move" />
-      )}
+      {last !== null && <circle cx={at(unpack(last).x)} cy={at(unpack(last).y)} r={C * 0.11} className="last-move" />}
 
       {fiveEnds && (
         <line
@@ -257,14 +268,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
       )}
 
       {cursor && (
-        <rect
-          x={at(cursor.x) - C / 2}
-          y={at(cursor.y) - C / 2}
-          width={C}
-          height={C}
-          rx="4"
-          className="cursor"
-        >
+        <rect x={at(cursor.x) - C / 2} y={at(cursor.y) - C / 2} width={C} height={C} rx="4" className="cursor">
           <title>{coordinate(cursor.x, cursor.y, size)}</title>
         </rect>
       )}

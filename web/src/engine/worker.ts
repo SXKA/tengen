@@ -33,7 +33,15 @@ const ready = (async () => {
   const { instance } = await WebAssembly.instantiate(bytes, {
     env: {
       tg_now: () => performance.now(),
-      tg_info: (depth: number, seldepth: number, value: number, nodes: number, elapsedMs: number, ptr: number, len: number) => {
+      tg_info: (
+        depth: number,
+        seldepth: number,
+        value: number,
+        nodes: number,
+        elapsedMs: number,
+        ptr: number,
+        len: number,
+      ) => {
         const pv = Array.from(new Uint16Array(engine.memory.buffer, ptr, len));
         post({ kind: "info", info: { depth, seldepth, value, nodes, elapsedMs, pv } });
       },

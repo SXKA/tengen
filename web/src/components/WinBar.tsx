@@ -8,7 +8,14 @@ interface Props {
 export function WinBar({ black, label }: Props) {
   const share = black ?? 0.5;
   return (
-    <div className="winbar" role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
+    <div
+      className="winbar"
+      role="meter"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(share * 100)}
+    >
       <div className="winbar-black" style={{ flexGrow: share }} />
       <div className="winbar-white" style={{ flexGrow: 1 - share }} />
     </div>

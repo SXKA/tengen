@@ -206,8 +206,11 @@ export function App() {
   }
 
   const client = engine.current;
-  const blackChance = info && client ? client.blackWinChance(info.info.value, info.color) : null;
-  const mate = info && client ? client.mateIn(info.info.value) : null;
+  const result = phase === "over" ? (snapshot?.result ?? 0) : 0;
+  const finished: StoneColor | null = result === 1 ? "black" : result === 2 ? "white" : null;
+  let blackChance = info && client ? client.blackWinChance(info.info.value, info.color) : null;
+  if (finished) blackChance = finished === "black" ? 1 : 0;
+  const mate = info && client && phase !== "over" ? client.mateIn(info.info.value) : null;
   const winner = mate === null ? null : mate > 0 ? info!.color : info!.color === "black" ? "white" : "black";
 
   // Drop the start of the expected line once it has been played.
@@ -233,7 +236,8 @@ export function App() {
     const { x, y } = unpack(m);
     return coordinate(x, y, size);
   };
-  const lastMove = moves.length > 0 ? t.lastMove(colorName(sideToMove(moves.slice(0, -1))), name(moves[moves.length - 1])) : "";
+  const lastMove =
+    moves.length > 0 ? t.lastMove(colorName(sideToMove(moves.slice(0, -1))), name(moves[moves.length - 1])) : "";
 
   return (
     <div className="app" lang={settings.lang === "zh" ? "zh-Hant-TW" : "en"}>
@@ -284,11 +288,15 @@ export function App() {
 
           <section className="readout" aria-label={t.winChance}>
             <p className="chance">
-              {winner !== null && mate !== null
-                ? t.mateFor(colorName(winner), Math.abs(mate))
-                : blackChance !== null
-                  ? t.blackShare(Math.round(blackChance * 100))
-                  : " "}
+              {finished
+                ? t.fiveBy(colorName(finished))
+                : result === 3
+                  ? t.draw
+                  : winner !== null && mate !== null
+                    ? t.mateFor(colorName(winner), Math.abs(mate))
+                    : blackChance !== null
+                      ? t.blackShare(Math.round(blackChance * 100))
+                      : " "}
             </p>
             <dl className="stats">
               <div>
@@ -334,7 +342,12 @@ export function App() {
               <legend>{t.playAs}</legend>
               {(["black", "white"] as const).map((c) => (
                 <label key={c} className={settings.human === c ? "selected" : ""}>
-                  <input type="radio" name="human" checked={settings.human === c} onChange={() => newGame({ human: c })} />
+                  <input
+                    type="radio"
+                    name="human"
+                    checked={settings.human === c}
+                    onChange={() => newGame({ human: c })}
+                  />
                   <span className={`swatch swatch-${c}`} aria-hidden="true" />
                   {colorName(c)}
                 </label>
@@ -346,7 +359,12 @@ export function App() {
               <legend>{t.strength}</legend>
               {t.levels.map((label, i) => (
                 <label key={label} className={settings.level === i ? "selected" : ""}>
-                  <input type="radio" name="level" checked={settings.level === i} onChange={() => update({ level: i })} />
+                  <input
+                    type="radio"
+                    name="level"
+                    checked={settings.level === i}
+                    onChange={() => update({ level: i })}
+                  />
                   {label}
                 </label>
               ))}
@@ -363,7 +381,11 @@ export function App() {
             </fieldset>
 
             <label className="toggle">
-              <input type="checkbox" checked={settings.threats} onChange={(e) => update({ threats: e.target.checked })} />
+              <input
+                type="checkbox"
+                checked={settings.threats}
+                onChange={(e) => update({ threats: e.target.checked })}
+              />
               <span>
                 {t.showThreats}
                 <small>{t.showThreatsNote}</small>
