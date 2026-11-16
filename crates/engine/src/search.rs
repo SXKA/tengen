@@ -183,7 +183,7 @@ pub struct SearchResult {
 /// A search engine: the shared table plus settings. Positions are passed to
 /// each [`Engine::search`] call.
 pub struct Engine {
-    tt: TranspositionTable,
+    tt: Arc<TranspositionTable>,
     threads: usize,
     clock: Clock,
     stop: Arc<AtomicBool>,
@@ -193,14 +193,16 @@ impl Engine {
     /// An engine with a `hash_mb` megabyte table and one thread.
     pub fn new(hash_mb: usize) -> Engine {
         Engine {
-            tt: TranspositionTable::new(hash_mb),
+            tt: Arc::new(TranspositionTable::new(hash_mb)),
             threads: 1,
             clock: default_clock,
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Search threads (only honored with the `threads` feature).
+    /// Search threads. Native builds need the `threads` feature; WebAssembly
+    /// builds with atomics need the host to run [`pool::helper`] in as many
+    /// extra threads.
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = threads.clamp(1, 256);
     }
@@ -213,7 +215,7 @@ impl Engine {
     /// Resize the table, dropping its contents.
     pub fn set_hash(&mut self, megabytes: usize) {
         if megabytes != self.tt.megabytes() {
-            self.tt = TranspositionTable::new(megabytes);
+            self.tt = Arc::new(TranspositionTable::new(megabytes));
         }
     }
 
@@ -237,14 +239,14 @@ impl Engine {
     pub fn search(&mut self, board: &Board, limits: &Limits, mut on_info: impl FnMut(&Info)) -> SearchResult {
         self.stop.store(false, Relaxed);
         self.tt.new_search();
-        let shared = Shared {
-            tt: &self.tt,
-            stop: &self.stop,
+        let shared = Arc::new(Shared {
+            tt: Arc::clone(&self.tt),
+            stop: Arc::clone(&self.stop),
             nodes: AtomicU64::new(0),
             clock: self.clock,
             start: (self.clock)(),
             limits: limits.clone(),
-        };
+        });
 
         #[cfg(feature = "threads")]
         let result = std::thread::scope(|scope| {
@@ -265,7 +267,24 @@ impl Engine {
             }
             result
         });
-        #[cfg(not(feature = "threads"))]
+
+        #[cfg(all(not(feature = "threads"), target_arch = "wasm32", target_feature = "atomics"))]
+        let result = {
+            if self.threads > 1 {
+                pool::start(&shared, board, self.threads);
+            }
+            let result = Worker::new(&shared, 0, board.clone()).think(&mut on_info);
+            shared.stop.store(true, Relaxed);
+            if self.threads > 1 {
+                pool::finish();
+            }
+            result
+        };
+
+        #[cfg(all(
+            not(feature = "threads"),
+            not(all(target_arch = "wasm32", target_feature = "atomics"))
+        ))]
         let result = Worker::new(&shared, 0, board.clone()).think(&mut on_info);
 
         SearchResult {
@@ -275,17 +294,100 @@ impl Engine {
     }
 }
 
+/// Helper threads started by the host, for WebAssembly with shared memory,
+/// where `std::thread::spawn` is unavailable. Each extra thread runs
+/// [`pool::helper`] forever; searches hand them work through a shared slot.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+pub mod pool {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use super::{Shared, Worker};
+    use crate::board::Board;
+
+    struct Job {
+        shared: Arc<Shared>,
+        board: Board,
+        generation: u64,
+        threads: usize,
+    }
+
+    struct State {
+        job: Option<Arc<Job>>,
+        generation: u64,
+        /// Helpers currently working on the job.
+        active: usize,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        job: None,
+        generation: 0,
+        active: 0,
+    });
+    static WAKE: Condvar = Condvar::new();
+
+    /// Body of helper thread `id` (1 or more). Never returns.
+    pub fn helper(id: usize) -> ! {
+        let mut seen = 0;
+        loop {
+            let job = {
+                let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    if let Some(job) = &state.job
+                        && job.generation != seen
+                    {
+                        seen = job.generation;
+                        if id < job.threads {
+                            let job = Arc::clone(job);
+                            state.active += 1;
+                            break job;
+                        }
+                    }
+                    state = WAKE.wait(state).unwrap_or_else(|e| e.into_inner());
+                }
+            };
+            Worker::new(&job.shared, id, job.board.clone()).think(&mut |_| {});
+            drop(job);
+            STATE.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
+            WAKE.notify_all();
+        }
+    }
+
+    /// Hand a search to the helpers.
+    pub(super) fn start(shared: &Arc<Shared>, board: &Board, threads: usize) {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation += 1;
+        let generation = state.generation;
+        state.job = Some(Arc::new(Job {
+            shared: Arc::clone(shared),
+            board: board.clone(),
+            generation,
+            threads,
+        }));
+        drop(state);
+        WAKE.notify_all();
+    }
+
+    /// Wait until every helper has left the (stopped) search.
+    pub(super) fn finish() {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        while state.active > 0 {
+            state = WAKE.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        state.job = None;
+    }
+}
+
 /// State shared by every thread of one search.
-struct Shared<'a> {
-    tt: &'a TranspositionTable,
-    stop: &'a AtomicBool,
+struct Shared {
+    tt: Arc<TranspositionTable>,
+    stop: Arc<AtomicBool>,
     nodes: AtomicU64,
     clock: Clock,
     start: f64,
     limits: Limits,
 }
 
-impl Shared<'_> {
+impl Shared {
     fn elapsed(&self) -> f64 {
         (self.clock)() - self.start
     }
@@ -317,7 +419,7 @@ const NODE_CHECK: u64 = 1024;
 
 /// One search thread.
 struct Worker<'a> {
-    shared: &'a Shared<'a>,
+    shared: &'a Shared,
     id: usize,
     board: Board,
     nodes: u64,
@@ -333,7 +435,7 @@ struct Worker<'a> {
 }
 
 impl<'a> Worker<'a> {
-    fn new(shared: &'a Shared<'a>, id: usize, board: Board) -> Worker<'a> {
+    fn new(shared: &'a Shared, id: usize, board: Board) -> Worker<'a> {
         let plies = MAX_PLY + 4;
         Worker {
             shared,

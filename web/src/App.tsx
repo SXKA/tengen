@@ -304,6 +304,10 @@ export function App() {
                 <dd>{info ? `${info.info.depth}/${info.info.seldepth}` : "–"}</dd>
               </div>
               <div>
+                <dt>{t.threads}</dt>
+                <dd>{engine.current?.threads ?? 1}</dd>
+              </div>
+              <div>
                 <dt>{t.speed}</dt>
                 <dd>
                   {info ? formatRate((info.info.nodes / Math.max(info.info.elapsedMs, 1)) * 1000) : "–"}{" "}

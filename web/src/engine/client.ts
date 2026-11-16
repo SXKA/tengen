@@ -10,6 +10,8 @@ export class EngineClient {
   /** Score of a win next ply, and eval units per logistic unit. */
   mate = 30000;
   scale = 200;
+  /** Search threads the engine uses. */
+  threads = 1;
   onInfo: (info: SearchInfo) => void = () => {};
   onReady: () => void = () => {};
 
@@ -25,6 +27,7 @@ export class EngineClient {
         case "ready":
           this.mate = message.mate;
           this.scale = message.scale;
+          this.threads = message.threads;
           this.onReady();
           return;
         case "info":

@@ -128,6 +128,46 @@ pub extern "C" fn tg_new(size: u32) -> i32 {
     0
 }
 
+/// Use `threads` search threads. With more than one, the host must have
+/// started `threads - 1` helpers with [`tg_helper`]; builds without shared
+/// memory always search with one.
+#[unsafe(no_mangle)]
+pub extern "C" fn tg_set_threads(threads: u32) {
+    let threads = if cfg!(target_feature = "atomics") {
+        threads.max(1)
+    } else {
+        1
+    };
+    with_game((), |g| g.engine.set_threads(threads as usize));
+}
+
+/// Whether this build can search with several threads (shared memory).
+#[unsafe(no_mangle)]
+pub extern "C" fn tg_threaded() -> i32 {
+    cfg!(target_feature = "atomics") as i32
+}
+
+/// Run helper thread `id` (1 or more) forever. Call it from a separate
+/// instance of the module sharing this one's memory, after giving that
+/// instance its own stack (`__stack_pointer`) and thread-local storage
+/// (`__wasm_init_tls`).
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn tg_helper(id: u32) {
+    tengen_engine::search::pool::helper(id.max(1) as usize)
+}
+
+/// Allocate `size` bytes aligned to `align` that are never freed, for helper
+/// stacks and thread-local blocks. Returns null on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn tg_alloc(size: u32, align: u32) -> *mut u8 {
+    match std::alloc::Layout::from_size_align(size.max(1) as usize, align.max(1) as usize) {
+        // SAFETY: the layout has a non-zero size.
+        Ok(layout) => unsafe { std::alloc::alloc_zeroed(layout) },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// Resize the search table.
 #[unsafe(no_mangle)]
 pub extern "C" fn tg_set_hash(megabytes: u32) {

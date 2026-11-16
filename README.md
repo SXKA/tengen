@@ -33,7 +33,8 @@ The engine follows the design of strong classical gomoku engines, in particular
 - **Search.** Principal variation search with iterative deepening, aspiration windows and a lock-free
   transposition table; a threat-space quiescence search that finds victories by continuous fours (VCF); exact
   defences against open threes, verified by playing them; extensions for forced replies; reverse futility pruning,
-  razoring, late move pruning and reductions. In the native brain, Lazy SMP spreads the search over all cores.
+  razoring, late move pruning and reductions. Lazy SMP spreads the search over all cores, in the browser too: extra
+  Web Workers join the search through shared WebAssembly memory.
 
 The [wiki](https://github.com/SXKA/tengen/wiki) (Traditional Chinese) explains each part in detail.
 
@@ -57,7 +58,9 @@ npm run wasm   # builds src/engine/tengen.wasm
 npm run dev
 ```
 
-On Vercel, set the project's root directory to `web`; `vercel.json` installs Rust during the build.
+The multi-threaded build (`tengen-mt.wasm`) also needs the `rust-src` component. On Vercel, set the project's root
+directory to `web`; the build script installs Rust, and `vercel.json` sends the cross-origin isolation headers that
+shared memory requires.
 
 ## Testing changes
 
@@ -81,7 +84,7 @@ plays self-play games with `tengen-tune`, fits new evaluation weights and checks
 | `crates/engine` | The engine library: board, patterns, evaluation, move generation, search |
 | `crates/piskvork` | `pbrain-tengen`, the Gomocup protocol front end |
 | `crates/arena` | `tengen-arena` (matches and SPRT) and `tengen-tune` (self-play and tuning) |
-| `crates/wasm` | The WebAssembly build with a plain C ABI |
+| `crates/wasm` | The WebAssembly builds (single- and multi-threaded) with a plain C ABI |
 | `web` | The browser app: React, with the engine in a Web Worker |
 
 ## Acknowledgements

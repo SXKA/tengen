@@ -25,7 +25,8 @@ Tengen 是用 Rust 寫的自由規則（無禁手）五子棋引擎。它可以�
 - **線性估值**：每個空格依組合編碼提供分數，再加上「雙方各有哪些先手」的威脅項。權重用自我對弈的勝負做邏輯迴歸擬合
   （Texel tuning），是量出來的而不是猜的。
 - **搜尋**：迭代加深的主要變例搜尋（PVS）、期望窗口、無鎖同形表；能找出連續衝四勝（VCF）的威脅空間靜態搜尋；對活三的
-  防守點逐一試下驗證；強制應手延伸；反向無益剪枝、razoring、後期著法剪枝與縮減。原生版本以 Lazy SMP 使用所有 CPU 核心。
+  防守點逐一試下驗證；強制應手延伸；反向無益剪枝、razoring、後期著法剪枝與縮減。以 Lazy SMP 使用所有 CPU 核心，瀏覽器
+  裡也一樣：額外的 Web Worker 透過共享的 WebAssembly 記憶體一起搜尋。
 
 各部分的細節請看 [wiki](https://github.com/SXKA/tengen/wiki)。
 
@@ -49,7 +50,8 @@ npm run wasm   # 產生 src/engine/tengen.wasm
 npm run dev
 ```
 
-部署到 Vercel 時把專案根目錄設成 `web`，`vercel.json` 會在建置時安裝 Rust。
+多執行緒版本（`tengen-mt.wasm`）還需要 `rust-src` 元件。部署到 Vercel 時把專案根目錄設成 `web`，建置腳本會安裝 Rust，
+`vercel.json` 則送出共享記憶體所需的跨來源隔離標頭。
 
 ## 驗證修改
 
@@ -72,7 +74,7 @@ GitHub Actions 的 **SPRT** 工作流程會在分支與 `master` 之間跑同樣
 | `crates/engine` | 引擎函式庫：棋盤、棋型、估值、著法生成、搜尋 |
 | `crates/piskvork` | `pbrain-tengen`，Gomocup 協定介面 |
 | `crates/arena` | `tengen-arena`（對戰與 SPRT）與 `tengen-tune`（自我對弈與調參） |
-| `crates/wasm` | WebAssembly 版本，提供純 C ABI |
+| `crates/wasm` | WebAssembly 版本（單執行緒與多執行緒），提供純 C ABI |
 | `web` | 網頁版：React，引擎跑在 Web Worker |
 
 ## 致謝

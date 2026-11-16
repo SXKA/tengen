@@ -41,7 +41,7 @@ export type Request =
   | { kind: "think"; ms: number; depth: number };
 
 export type Response =
-  | { kind: "ready"; mate: number; scale: number }
+  | { kind: "ready"; mate: number; scale: number; threads: number }
   | { kind: "info"; info: SearchInfo }
   | { kind: "snapshot"; id: number; snapshot: Snapshot }
   | { kind: "move"; id: number; move: Packed | null }
