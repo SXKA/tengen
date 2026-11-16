@@ -26,6 +26,8 @@ interface Props {
   threats: { black: Int8Array; white: Int8Array } | null;
   label: string;
   onPlace: (move: Packed) => void;
+  /** Told when a first tap marks a point that a second tap would place. */
+  onPending?: (pending: boolean) => void;
 }
 
 function starPoints(size: number): [number, number][] {
@@ -44,7 +46,7 @@ function starPoints(size: number): [number, number][] {
 
 const at = (i: number) => C + i * C;
 
-export function Board({ size, moves, five, human, interactive, ghosts, threats, label, onPlace }: Props) {
+export function Board({ size, moves, five, human, interactive, ghosts, threats, label, onPlace, onPending }: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<Packed | null>(null);
   // On touch screens the first tap only marks the point; a second tap places.
@@ -70,6 +72,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
   function place(move: Packed) {
     if (!interactive || occupied.has(move)) return;
     setPending(null);
+    onPending?.(false);
     onPlace(move);
   }
 
@@ -78,6 +81,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
     if (move === null || !interactive || occupied.has(move)) return;
     if (event.pointerType === "touch" && pending !== move) {
       setPending(move);
+      onPending?.(true);
       return;
     }
     place(move);
