@@ -49,6 +49,8 @@ def main() -> None:
             lambda m: '#include "%s"' % pathlib.PurePosixPath(m.group(1).replace("\\", "/")).name,
             text,
         )
+        # Windows file names ignore case; the compatibility header is windows.h.
+        text = text.replace("<Windows.h>", "<windows.h>")
         # The size arguments that MSVC's sscanf_s takes after %s buffers.
         text = re.sub(r"\b(com|key)\s*,\s*9\d\d\b", r"\1", text)
         text = text.replace("sscanf_s(", "sscanf(")
