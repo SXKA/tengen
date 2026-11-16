@@ -49,11 +49,16 @@ async function start(engine) {
   if (!/^[a-z]+$/.test(engine)) throw new Error(`unknown engine ${engine}`);
   const script = BASE + engine + ".js";
   importScripts(script);
-  brain = await self.Brain({
+  const loading = self.Brain({
     locateFile: (path) => BASE + path,
     print: (line) => self.postMessage({ type: "line", line }),
     printErr: () => {},
   });
+  // SlowRenju waits for its timer thread, which some browsers never start.
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("did not start in this browser")), 20000),
+  );
+  brain = await Promise.race([loading, timeout]);
   self.postMessage({ type: "ready", threads: 1 });
   while (waiting.length > 0) run(waiting.shift());
 }

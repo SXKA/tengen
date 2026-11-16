@@ -1,3 +1,4 @@
 node_modules
 dist
 src/engine/*.wasm
+public/engines/rapfi/weights

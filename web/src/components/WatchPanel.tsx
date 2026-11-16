@@ -53,10 +53,12 @@ export function WatchPanel({
       heading = t.watchIdle;
       note = t.watchIdleNote;
       break;
-    case "loading":
-      heading = download ? t.watchLoading(names[download.side]) : t.loading;
+    case "loading": {
+      const side = download?.side ?? state.loading;
+      heading = side ? t.watchLoading(names[side]) : t.loading;
       if (download) note = t.watchDownload(names[download.side], Math.round(download.fraction * 100));
       break;
+    }
     case "paused":
       heading = thinking ? t.watchPausing : t.watchPaused;
       break;

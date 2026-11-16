@@ -82,9 +82,17 @@ export function unavailable(id: EngineId, rule: RuleId, size: number): "rule" | 
   return null;
 }
 
-/** Search threads for engines that can use several. */
+/** iPhones and iPads, iPads included when they say they are Macs. */
+const appleMobile = () =>
+  /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+/**
+ * Search threads for engines that can use several. One on iPhones and
+ * iPads, where memory is short and threaded builds have failed to start.
+ */
 function threads(): number {
-  if (typeof crossOriginIsolated === "undefined" || !crossOriginIsolated) return 1;
+  if (typeof crossOriginIsolated === "undefined" || !crossOriginIsolated || appleMobile()) return 1;
   return Math.max(1, Math.min(navigator.hardwareConcurrency || 1, 8));
 }
 

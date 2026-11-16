@@ -20,6 +20,8 @@ export interface MatchState {
   thinking: Side | null;
   names: Record<Side, string>;
   info: Record<Side, BrainInfo | null>;
+  /** The side whose engine is loading. */
+  loading: Side | null;
   /** The side whose engine is downloading, with progress from 0 to 1. */
   download: { side: Side; fraction: number } | null;
   end: MatchEnd | null;
@@ -31,6 +33,7 @@ const idle = (engines: Record<Side, EngineId>): MatchState => ({
   thinking: null,
   names: { black: engine(engines.black).name, white: engine(engines.white).name },
   info: { black: null, white: null },
+  loading: null,
   download: null,
   end: null,
 });
@@ -94,6 +97,7 @@ export function useMatch(referee: RefObject<EngineClient | null>, engines: Recor
             [side]: info.depth === undefined && s.info[side] ? { ...s.info[side], message: info.message } : info,
           },
         }));
+      current.onLoading = (side) => live((s) => ({ ...s, loading: side, download: null }));
       current.onEnd = (end) => live((s) => ({ ...s, status: "over", thinking: null, download: null, end }));
       setState({
         ...idle(setup.engines),

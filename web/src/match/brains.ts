@@ -102,8 +102,8 @@ export interface Transport {
 
 /** Extra time a brain may take beyond its turn before it loses on time. */
 const GRACE_MS = 5000;
-/** Time a brain may take to load and answer START. */
-const START_MS = 120_000;
+/** Time a brain may take to answer START, once loaded. */
+const START_MS = 60_000;
 
 /**
  * Any brain that speaks the Piskvork protocol. Every move sends the whole
@@ -221,6 +221,12 @@ export class PiskvorkBrain implements Brain {
 
 export class TimeoutError extends Error {}
 
+/** The threaded build did not start; one thread might. */
+export class RetryError extends Error {}
+
+/** Loading fails when the host worker says nothing for this long. */
+const LOAD_SILENCE_MS = 60_000;
+
 /** Eval units per logistic unit in Rapfi's scores. */
 const RAPFI_SCALE = 200;
 
@@ -293,28 +299,40 @@ export class WorkerTransport implements Transport {
   constructor(host: string, start: Record<string, unknown>) {
     this.worker = new Worker(host);
     this.ready = new Promise<number>((resolve, reject) => {
+      let loading = true;
+      let timer = 0;
+      // A backstop: the hosts time out themselves, but a worker can die quietly.
+      const watch = () => {
+        clearTimeout(timer);
+        timer = window.setTimeout(() => fail(new Error("the engine did not load")), LOAD_SILENCE_MS);
+      };
+      const fail = (error: Error) => {
+        clearTimeout(timer);
+        if (loading) reject(error);
+        loading = false;
+        this.onClose(error.message);
+      };
+      watch();
       this.worker.onmessage = (event: MessageEvent) => {
         const message = event.data;
         switch (message.type) {
           case "progress":
+            watch();
             this.onProgress(message.total > 0 ? message.loaded / message.total : 0);
             break;
           case "ready":
+            clearTimeout(timer);
+            loading = false;
             resolve(message.threads);
             break;
           case "line":
             this.onLine(message.line);
             break;
           case "error":
-            reject(new Error(message.message));
-            this.onClose(message.message);
+            fail(message.retry ? new RetryError(message.message) : new Error(message.message));
         }
       };
-      this.worker.onerror = (event) => {
-        const reason = event.message || "the engine failed to load";
-        reject(new Error(reason));
-        this.onClose(reason);
-      };
+      this.worker.onerror = (event) => fail(new Error(event.message || "the engine failed to load"));
     });
     this.worker.postMessage({ type: "start", ...start });
   }
@@ -373,11 +391,22 @@ export class HostedBrain extends PiskvorkBrain {
   }
 
   async start(size: number, rule: RuleId) {
-    const transport = new WorkerTransport(this.host, this.startMessage(rule));
+    const message = this.startMessage(rule);
+    try {
+      this.threads = await this.load(message);
+    } catch (error) {
+      if (!(error instanceof RetryError)) throw error;
+      // Its threads did not start in this browser: one thread, then.
+      this.threads = await this.load({ ...message, threads: 1 });
+    }
+    await super.start(size, rule);
+  }
+
+  private load(message: Record<string, unknown>): Promise<number> {
+    const transport = new WorkerTransport(this.host, message);
     transport.onProgress = this.onProgress;
     this.relay.attach(transport);
     this.reopen();
-    this.threads = await transport.ready;
-    await super.start(size, rule);
+    return transport.ready;
   }
 }
