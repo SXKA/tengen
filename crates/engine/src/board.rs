@@ -626,27 +626,39 @@ impl Board {
                     if self.cells[next.index()].stone != 0 {
                         continue;
                     }
-                    self.detach(next, values);
-                    self.refresh_direction(next, dir, tables);
-                    self.attach(next, values);
+                    self.update_direction(next, dir, tables, values);
                 }
             }
         }
     }
 
-    /// Recompute the patterns of an empty `pos` along `dir` only, and the
-    /// combinations that depend on them.
+    /// Recompute the patterns of an empty `pos` along `dir`, and for each
+    /// color whose pattern changed, its code, combination and the running
+    /// totals. Often a distant stone changes nothing, and then nothing else
+    /// is looked up.
     #[inline]
-    fn refresh_direction(&mut self, pos: Pos, dir: usize, tables: &Tables) {
+    fn update_direction(&mut self, pos: Pos, dir: usize, tables: &Tables, values: &eval::CellValues) {
         let (line, at) = self.line_of(pos, dir);
         let black = self.lines[0][dir][line] >> at;
         let white = self.lines[1][dir][line] >> at;
         let edge = self.edges[dir][line] >> at;
-        let cell = &mut self.cells[pos.index()];
-        cell.pattern[0][dir] = tables.line(black, white | edge);
-        cell.pattern[1][dir] = tables.line(white, black | edge);
-        cell.pcode = cell.pattern.map(|p| tables.pcode(p));
-        cell.p4 = cell.pcode.map(|code| tables.pattern4(code));
+        let new = [tables.line(black, white | edge), tables.line(white, black | edge)];
+        for (c, &pattern) in new.iter().enumerate() {
+            let cell = &mut self.cells[pos.index()];
+            if cell.pattern[c][dir] == pattern {
+                continue;
+            }
+            cell.pattern[c][dir] = pattern;
+            let (old_code, old_p4) = (cell.pcode[c], cell.p4[c]);
+            let code = tables.pcode(cell.pattern[c]);
+            let p4 = tables.pattern4(code);
+            cell.pcode[c] = code;
+            cell.p4[c] = p4;
+            self.value[c] += values.value(code) - values.value(old_code);
+            self.value_late[c] += values.value_late(code) - values.value_late(old_code);
+            self.p4_count[c][old_p4 as usize] -= 1;
+            self.p4_count[c][p4 as usize] += 1;
+        }
     }
 
     /// `q` as a board cell if it is on the board. Every step changes the
