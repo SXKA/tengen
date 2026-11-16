@@ -271,52 +271,65 @@ trait Model {
     fn grad(&self, s: &Sample, g: f64, grad: &mut [f64]);
 }
 
-/// Per line pattern, per combination, and the threat term.
+/// Per line pattern and per combination, early and late in the game, and
+/// the threat term.
 struct FactoredModel;
+
+const FACTORS: usize = Pattern::COUNT + Pattern4::COUNT;
 
 impl Model for FactoredModel {
     fn params(&self) -> usize {
-        Pattern::COUNT + Pattern4::COUNT + THREAT_COUNT
+        2 * FACTORS + THREAT_COUNT
     }
     fn eval(&self, s: &Sample, p: &[f64]) -> f64 {
-        let (lines, rest) = p.split_at(Pattern::COUNT);
-        let (combos, threat) = rest.split_at(Pattern4::COUNT);
-        let a: f64 = s.pattern.iter().zip(lines).map(|(&n, w)| n as f64 * w).sum();
-        let b: f64 = s.pattern4.iter().zip(combos).map(|(&n, w)| n as f64 * w).sum();
-        a + b + threat[s.features.threat]
+        let t = s.features.phase();
+        let dot = |w: &[f64]| -> f64 {
+            let (lines, combos) = w.split_at(Pattern::COUNT);
+            let a: f64 = s.pattern.iter().zip(lines).map(|(&n, w)| n as f64 * w).sum();
+            let b: f64 = s.pattern4.iter().zip(combos).map(|(&n, w)| n as f64 * w).sum();
+            a + b
+        };
+        (1.0 - t) * dot(&p[..FACTORS]) + t * dot(&p[FACTORS..2 * FACTORS]) + p[2 * FACTORS + s.features.threat]
     }
     fn grad(&self, s: &Sample, g: f64, grad: &mut [f64]) {
-        for (i, &n) in s.pattern.iter().enumerate() {
-            grad[i] += g * n as f64;
+        let t = s.features.phase();
+        for (offset, weight) in [(0, 1.0 - t), (FACTORS, t)] {
+            for (i, &n) in s.pattern.iter().enumerate() {
+                grad[offset + i] += g * weight * n as f64;
+            }
+            for (i, &n) in s.pattern4.iter().enumerate() {
+                grad[offset + Pattern::COUNT + i] += g * weight * n as f64;
+            }
         }
-        for (i, &n) in s.pattern4.iter().enumerate() {
-            grad[Pattern::COUNT + i] += g * n as f64;
-        }
-        grad[Pattern::COUNT + Pattern4::COUNT + s.features.threat] += g;
+        grad[2 * FACTORS + s.features.threat] += g;
     }
 }
 
-/// A value per pattern code, and the threat term.
+/// A value per pattern code, early and late in the game, and the threat
+/// term.
 struct CodeModel;
 
 impl Model for CodeModel {
     fn params(&self) -> usize {
-        PCODE_COUNT + THREAT_COUNT
+        2 * PCODE_COUNT + THREAT_COUNT
     }
     fn eval(&self, s: &Sample, p: &[f64]) -> f64 {
+        let t = s.features.phase();
         let cells: f64 = s
             .features
             .pcode
             .iter()
-            .map(|&(code, n)| n as f64 * p[code as usize])
+            .map(|&(code, n)| n as f64 * ((1.0 - t) * p[code as usize] + t * p[PCODE_COUNT + code as usize]))
             .sum();
-        cells + p[PCODE_COUNT + s.features.threat]
+        cells + p[2 * PCODE_COUNT + s.features.threat]
     }
     fn grad(&self, s: &Sample, g: f64, grad: &mut [f64]) {
+        let t = s.features.phase();
         for &(code, n) in &s.features.pcode {
-            grad[code as usize] += g * n as f64;
+            grad[code as usize] += g * (1.0 - t) * n as f64;
+            grad[PCODE_COUNT + code as usize] += g * t * n as f64;
         }
-        grad[PCODE_COUNT + s.features.threat] += g;
+        grad[2 * PCODE_COUNT + s.features.threat] += g;
     }
 }
 
@@ -368,11 +381,14 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
     }
 
     let factored = FactoredModel;
-    let start: Vec<f64> = DEFAULT_FACTORED
+    let d = &DEFAULT_FACTORED;
+    let start: Vec<f64> = d
         .pattern
         .iter()
-        .chain(&DEFAULT_FACTORED.pattern4)
-        .chain(&DEFAULT_FACTORED.threat)
+        .chain(&d.pattern4)
+        .chain(&d.pattern)
+        .chain(&d.pattern4)
+        .chain(&d.threat)
         .map(|&v| v as f64)
         .collect();
     // Threat entries seen too rarely keep their hand-set values.
@@ -383,20 +399,27 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
     let mut stage1 = optimize(&factored, &train, &start, &start, 1e-7, epochs);
     for (t, &count) in seen.iter().enumerate() {
         if count < 100 {
-            stage1[Pattern::COUNT + Pattern4::COUNT + t] = start[Pattern::COUNT + Pattern4::COUNT + t];
+            stage1[2 * FACTORS + t] = start[2 * FACTORS + t];
         }
     }
     let round = |p: &[f64]| p.iter().map(|v| v.round() as i32).collect::<Vec<_>>();
     let rounded = round(&stage1);
-    let tuned_factored = Factored {
-        pattern: rounded[..Pattern::COUNT].try_into().unwrap(),
-        pattern4: rounded[Pattern::COUNT..Pattern::COUNT + Pattern4::COUNT]
-            .try_into()
-            .unwrap(),
-        threat: rounded[Pattern::COUNT + Pattern4::COUNT..].try_into().unwrap(),
+    let model = |offset: usize| Factored {
+        pattern: rounded[offset..offset + Pattern::COUNT].try_into().unwrap(),
+        pattern4: rounded[offset + Pattern::COUNT..offset + FACTORS].try_into().unwrap(),
+        threat: rounded[2 * FACTORS..].try_into().unwrap(),
     };
-    let mut best = tuned_factored.weights();
-    let as_params = |w: &Weights| w.pcode.iter().chain(&w.threat).map(|&v| v as f64).collect::<Vec<_>>();
+    let (early, late) = (model(0), model(FACTORS));
+    let mut best = early.weights();
+    best.pcode_late = late.weights().pcode;
+    let as_params = |w: &Weights| {
+        w.pcode
+            .iter()
+            .chain(&w.pcode_late)
+            .chain(&w.threat)
+            .map(|&v| v as f64)
+            .collect::<Vec<_>>()
+    };
     let codes = CodeModel;
     let prior = as_params(&best);
     let mut best_loss = loss(&codes, &valid, &prior);
@@ -406,25 +429,24 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool) -> Weights {
         loss(&factored, &train, &stage1),
         loss(&factored, &valid, &start),
     );
-    eprintln!(
-        "factored pattern {:?}\nfactored pattern4 {:?}",
-        tuned_factored.pattern, tuned_factored.pattern4
-    );
+    eprintln!("early pattern {:?} pattern4 {:?}", early.pattern, early.pattern4);
+    eprintln!("late pattern {:?} pattern4 {:?}", late.pattern, late.pattern4);
 
     let strengths: &[f64] = if per_code { &[1e-7, 1e-8, 1e-9] } else { &[] };
     for &l2 in strengths {
         let p = optimize(&codes, &train, &prior, &prior, l2, epochs);
         let rounded = round(&p);
-        let mut threat = rounded[PCODE_COUNT..].to_vec();
+        let mut threat = rounded[2 * PCODE_COUNT..].to_vec();
         for (t, &count) in seen.iter().enumerate() {
             if count < 100 {
-                threat[t] = tuned_factored.threat[t];
+                threat[t] = early.threat[t];
             }
         }
         let pcode = rounded[..PCODE_COUNT].to_vec();
         let (policy_own, policy_opp) = eval::default_policy(&pcode);
         let weights = Weights {
             pcode,
+            pcode_late: rounded[PCODE_COUNT..2 * PCODE_COUNT].to_vec(),
             threat,
             policy_own,
             policy_opp,

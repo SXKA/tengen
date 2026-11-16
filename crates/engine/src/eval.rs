@@ -27,6 +27,9 @@ pub type Value = i32;
 /// Eval units per logistic unit: `win_probability = 1 / (1 + exp(-v / SCALE))`.
 pub const SCALE: f64 = 200.0;
 
+/// Stones on the board at which the late-game table takes over fully.
+pub const PHASE_PLIES: usize = 40;
+
 /// Number of threat-mask entries.
 pub const THREAT_COUNT: usize = 1 << 8;
 
@@ -45,8 +48,12 @@ mod bit {
 /// The evaluation tables.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Weights {
-    /// Value of an empty cell for one color, by pattern code.
+    /// Value of an empty cell for one color, by pattern code, early in the
+    /// game.
     pub pcode: Vec<i32>,
+    /// The same from [`PHASE_PLIES`] stones on; the evaluation blends the
+    /// two linearly in between.
+    pub pcode_late: Vec<i32>,
     /// Threat term, indexed by [`threat_mask`].
     pub threat: Vec<i32>,
     /// Move-ordering score of playing a cell, by the mover's pattern code
@@ -151,6 +158,7 @@ impl Factored {
             .collect::<Vec<i32>>();
         let (policy_own, policy_opp) = default_policy(&pcode);
         Weights {
+            pcode_late: pcode.clone(),
             pcode,
             threat: self.threat.to_vec(),
             policy_own,
@@ -172,6 +180,7 @@ impl Weights {
     /// their defaults.
     pub fn parse(text: &str) -> Result<Weights, String> {
         let mut pcode = None;
+        let mut pcode_late = None;
         let mut threat = None;
         let mut policy_own = None;
         let mut policy_opp = None;
@@ -187,6 +196,7 @@ impl Weights {
                 .collect::<Result<_, _>>()?;
             let (slot, len) = match name {
                 "pcode" => (&mut pcode, PCODE_COUNT),
+                "pcode_late" => (&mut pcode_late, PCODE_COUNT),
                 "threat" => (&mut threat, THREAT_COUNT),
                 "policy_own" => (&mut policy_own, PCODE_COUNT),
                 "policy_opp" => (&mut policy_opp, PCODE_COUNT),
@@ -200,6 +210,7 @@ impl Weights {
         let pcode = pcode.ok_or("missing pcode table")?;
         let (default_own, default_opp) = default_policy(&pcode);
         Ok(Weights {
+            pcode_late: pcode_late.unwrap_or_else(|| pcode.clone()),
             threat: threat.ok_or("missing threat table")?,
             policy_own: policy_own.unwrap_or(default_own),
             policy_opp: policy_opp.unwrap_or(default_opp),
@@ -213,6 +224,7 @@ impl std::fmt::Display for Weights {
         writeln!(f, "# Tengen evaluation weights, written by tengen-tune.")?;
         for (name, table) in [
             ("pcode", &self.pcode),
+            ("pcode_late", &self.pcode_late),
             ("threat", &self.threat),
             ("policy_own", &self.policy_own),
             ("policy_opp", &self.policy_opp),
@@ -238,6 +250,7 @@ pub fn install(weights: &Weights) -> Result<(), String> {
 /// The tables in the form the board and search use them.
 pub struct CellValues {
     values: Box<[i32; PCODE_COUNT]>,
+    values_late: Box<[i32; PCODE_COUNT]>,
     threat: Box<[i32; THREAT_COUNT]>,
     policy_own: Box<[i32; PCODE_COUNT]>,
     policy_opp: Box<[i32; PCODE_COUNT]>,
@@ -254,6 +267,7 @@ impl CellValues {
     pub fn new(weights: &Weights) -> CellValues {
         CellValues {
             values: weights.pcode.clone().try_into().expect("pcode table size"),
+            values_late: weights.pcode_late.clone().try_into().expect("pcode table size"),
             threat: weights.threat.clone().try_into().expect("threat table size"),
             policy_own: weights.policy_own.clone().try_into().expect("policy table size"),
             policy_opp: weights.policy_opp.clone().try_into().expect("policy table size"),
@@ -267,10 +281,16 @@ impl CellValues {
         self.policy_own[own as usize] + self.policy_opp[opp as usize]
     }
 
-    /// Value of a cell with pattern code `code`.
+    /// Value of a cell with pattern code `code`, early in the game.
     #[inline]
     pub fn value(&self, code: PatternCode) -> i32 {
         self.values[code as usize]
+    }
+
+    /// Value of a cell with pattern code `code`, late in the game.
+    #[inline]
+    pub fn value_late(&self, code: PatternCode) -> i32 {
+        self.values_late[code as usize]
     }
 }
 
@@ -297,8 +317,18 @@ pub fn threat_mask(board: &Board, us: Color) -> usize {
 #[inline]
 pub fn evaluate(board: &Board) -> Value {
     let us = board.side_to_move();
+    let them = us.opponent();
     let values = CellValues::standard();
-    board.pattern_value(us) - board.pattern_value(us.opponent()) + values.threat[threat_mask(board, us)]
+    let early = board.pattern_value(us) - board.pattern_value(them);
+    let late = board.pattern_value_late(us) - board.pattern_value_late(them);
+    blend(early, late, board.ply()) + values.threat[threat_mask(board, us)]
+}
+
+/// Mix early- and late-game values by the number of stones played.
+#[inline]
+fn blend(early: i32, late: i32, ply: usize) -> i32 {
+    let t = ply.min(PHASE_PLIES) as i32;
+    (early * (PHASE_PLIES as i32 - t) + late * t) / PHASE_PLIES as i32
 }
 
 /// Win probability of the side to move for an evaluation.
@@ -315,6 +345,8 @@ pub struct Features {
     pub pcode: Vec<(PatternCode, i32)>,
     /// Active threat-mask entry.
     pub threat: usize,
+    /// Stones on the board, for the game-phase blend.
+    pub ply: usize,
 }
 
 impl Features {
@@ -339,17 +371,28 @@ impl Features {
         Features {
             pcode,
             threat: threat_mask(board, us),
+            ply: board.ply(),
         }
     }
 
     /// Dot product with `weights`, i.e. the evaluation those weights give.
     pub fn dot(&self, weights: &Weights) -> i32 {
-        let cells: i32 = self
+        let early: i32 = self
             .pcode
             .iter()
             .map(|&(code, n)| n * weights.pcode[code as usize])
             .sum();
-        cells + weights.threat[self.threat]
+        let late: i32 = self
+            .pcode
+            .iter()
+            .map(|&(code, n)| n * weights.pcode_late[code as usize])
+            .sum();
+        blend(early, late, self.ply) + weights.threat[self.threat]
+    }
+
+    /// Weight of the late-game table for this position, from 0 to 1.
+    pub fn phase(&self) -> f64 {
+        self.ply.min(PHASE_PLIES) as f64 / PHASE_PLIES as f64
     }
 }
 
