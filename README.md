@@ -28,12 +28,15 @@ The engine follows the design of strong classical gomoku engines, in particular
   and so on). Each empty cell caches its patterns for both colors, an order-independent code of the four, and their
   combination class (four-three, double three, ...). Placing a stone updates only the cells along its four lines.
 - **Linear evaluation.** Every empty cell contributes a value by pattern code, plus a term for which forcing moves
-  each side has. The weights are fitted to self-play results by logistic regression (Texel tuning), so they are
-  measured rather than guessed.
+  each side has. There are two tables, one for the opening and one for later in the game, blended by the number of
+  stones (a tapered evaluation). The weights are fitted to self-play results by logistic regression (Texel tuning),
+  so they are measured rather than guessed.
+- **Learned move ordering.** Moves are ordered by per-code scores for what they build and what they block, fitted to
+  the moves chosen in self-play.
 - **Search.** Principal variation search with iterative deepening, aspiration windows and a lock-free
   transposition table; a threat-space quiescence search that finds victories by continuous fours (VCF); exact
   defences against open threes, verified by playing them; extensions for forced replies; reverse futility pruning,
-  razoring, late move pruning and reductions. Lazy SMP spreads the search over all cores, in the browser too: extra
+  razoring, late move pruning and reductions, and fail-high reductions. Lazy SMP spreads the search over all cores, in the browser too: extra
   Web Workers join the search through shared WebAssembly memory.
 
 The [wiki](https://github.com/SXKA/tengen/wiki) (Traditional Chinese) explains each part in detail.
