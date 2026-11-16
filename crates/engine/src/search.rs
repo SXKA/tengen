@@ -695,7 +695,8 @@ impl<'a> Worker<'a> {
             let v = loop {
                 let v = self.search_root(alpha, beta, search_depth);
                 self.root_moves.sort_by_key(|m| std::cmp::Reverse(m.value));
-                if self.stopped() {
+                // A full window cannot widen, whatever the value.
+                if self.stopped() || (alpha <= -INFINITE && beta >= INFINITE) {
                     break v;
                 }
                 if v <= alpha {
@@ -942,6 +943,12 @@ impl<'a> Worker<'a> {
             }
             Gen::Moves { forced } => forced,
         };
+        if list.is_empty() {
+            // Only forbidden cells are left for Black. No move can be made,
+            // which scores as a draw, like a full board (and like the root).
+            self.lists[ply] = list;
+            return 0;
+        }
         let killers = self.killers[ply];
         for m in list.iter_mut() {
             if Some(m.pos) == tt_move {
@@ -1263,6 +1270,37 @@ mod tests {
         let mut list = Vec::new();
         movegen::generate(&mut board, &mut list);
         assert!(list.iter().all(|m| m.pos != Pos::new(8, 7)));
+    }
+
+    #[test]
+    fn renju_black_without_a_legal_move_is_a_draw() {
+        use crate::Rule;
+        // A self-play game near its end, Black to move. Three cells are
+        // empty: (3, 14), and (7, 14) and (11, 14), where Black would make
+        // overlines. After (3, 14) and White's reply, Black has no legal
+        // move; the search used to score that -INFINITE and never finish.
+        const MOVES: &[&str] = &[
+            "10,4 7,4 6,4 8,4 7,6 8,5 9,6 8,6 8,7 8,3 8,2 6,5 9,2 10,5 7,2 10,2 9,3 9,5 7,5 11,5 12,5 7,3 6,2 ",
+            "5,2 11,4 10,3 11,7 6,0 6,3 12,4 9,7 10,7 9,9 9,8 10,8 8,10 8,9 7,9 5,6 13,5 9,1 5,4 5,3 6,8 5,7 ",
+            "11,3 14,6 5,9 7,7 6,7 4,4 3,5 4,3 4,2 7,1 8,0 9,0 9,4 3,3 2,3 6,6 5,5 10,10 8,8 3,9 4,8 8,1 11,2 ",
+            "12,1 6,1 12,10 11,9 13,10 11,10 6,10 4,6 7,8 2,5 4,5 5,10 10,12 10,11 11,11 13,9 9,12 11,12 2,6 ",
+            "9,13 5,11 10,9 12,9 12,11 13,12 4,10 13,13 12,12 4,9 12,7 11,6 13,6 11,8 1,9 13,14 13,11 3,11 2,8 ",
+            "3,7 3,10 3,8 4,11 2,9 4,7 13,8 13,3 13,4 14,3 12,3 14,8 4,12 1,4 3,6 1,10 2,10 3,2 4,1 14,2 10,6 ",
+            "14,4 14,0 2,13 6,14 5,13 3,12 2,2 1,2 1,3 2,4 6,12 3,13 2,14 1,8 7,13 2,7 0,9 1,6 0,5 5,14 7,11 ",
+            "4,14 7,12 7,10 8,13 6,13 6,11 9,14 8,11 9,11 8,12 8,14 12,2 13,2 14,10 11,13 1,12 14,9 0,4 1,11 4,0 ",
+            "3,1 2,0 0,10 2,12 5,0 0,3 0,2 0,1 0,6 14,13 11,1 1,0 14,5 1,1 3,0 14,11 14,12 0,11 0,0 7,0 10,0 ",
+            "11,0 12,0 13,0 2,1 5,1 13,1 10,1 14,1 3,4 1,5 12,6 0,7 1,7 13,7 14,7 0,8 5,8 12,8 6,9 9,10 2,11 ",
+            "0,12 5,12 0,13 1,13 4,13 10,13 12,14 12,13 14,14 0,14 10,14 1,14 ",
+        ];
+        let mut board = Board::with_rule(15, Rule::Renju);
+        for (x, y) in MOVES.concat().split_whitespace().map(|m| m.split_once(',').unwrap()) {
+            board.play(Pos::new(x.parse().unwrap(), y.parse().unwrap()));
+        }
+        assert_eq!(board.side_to_move(), Color::Black);
+        assert!(board.is_forbidden(Pos::new(7, 14)) && board.is_forbidden(Pos::new(11, 14)));
+        let result = best(&board, 6);
+        assert_eq!(result.best_move, Some(Pos::new(3, 14)));
+        assert!(result.value.abs() < INFINITE);
     }
 
     #[test]
