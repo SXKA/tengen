@@ -26,6 +26,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so new lints or codegen changes arrive in deliberate updates.
+  RUST_VERSION: "1.97.0"
 
 jobs:
   sprt:
@@ -39,7 +41,9 @@ jobs:
         with:
           path: base
           ref: ${{ inputs.base }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - name: Build both versions
         run: |
           cargo build --release --manifest-path new/Cargo.toml -p tengen-piskvork -p tengen-arena

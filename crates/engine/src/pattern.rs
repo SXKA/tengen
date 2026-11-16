@@ -290,7 +290,7 @@ fn classify_placed(own: u32, blocked: u32, placed: impl Fn(u32) -> Pattern) -> P
     let (mut wins, mut flex4, mut block4, mut flex3, mut block3, mut flex2, mut block2) = (0, 0, 0, 0, 0, 0, 0);
     let mut cells = WINDOW_MASK & !own & !blocked;
     while cells != 0 {
-        let bit = cells & cells.wrapping_neg();
+        let bit = cells.isolate_lowest_one();
         cells &= cells - 1;
         let next = own | bit;
         if has_five_through_center(next) {
@@ -428,7 +428,7 @@ mod tests {
         let mut children = HashMap::new();
         let mut cells = WINDOW_MASK & !own & !blocked;
         while cells != 0 {
-            let bit = cells & cells.wrapping_neg();
+            let bit = cells.isolate_lowest_one();
             cells &= cells - 1;
             if !has_five_through_center(own | bit) {
                 children.insert(own | bit, recursive(own | bit, blocked, memo));

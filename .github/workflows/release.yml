@@ -9,6 +9,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so new lints or codegen changes arrive in deliberate updates.
+  RUST_VERSION: "1.97.0"
 
 jobs:
   build:
@@ -24,8 +26,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked -p tengen-piskvork --target ${{ matrix.target }}
       - name: Package

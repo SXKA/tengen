@@ -18,6 +18,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned so new lints or codegen changes arrive in deliberate updates.
+  RUST_VERSION: "1.97.0"
 
 jobs:
   tune:
@@ -25,7 +27,9 @@ jobs:
     timeout-minutes: 340
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - run: cargo build --release -p tengen-piskvork -p tengen-arena
       - name: Self-play
         run: target/release/tengen-tune selfplay --games ${{ inputs.games }} --nodes ${{ inputs.nodes }} --seed "${{ github.run_id }}" --out games.txt

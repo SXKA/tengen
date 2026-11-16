@@ -221,10 +221,8 @@ fn zobrist() -> &'static Zobrist {
             stone: [[0; CELLS]; 2],
             side: 0,
         });
-        for color in 0..2 {
-            for key in keys.stone[color].iter_mut() {
-                *key = next();
-            }
+        for key in keys.stone.iter_mut().flatten() {
+            *key = next();
         }
         keys.side = next();
         keys
