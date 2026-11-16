@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { EngineClient } from "../engine/client";
 import type { RuleId, Snapshot } from "../engine/protocol";
-import type { BrainInfo } from "./brains";
+import type { Brain, BrainInfo } from "./brains";
 import { createBrain, engine, type EngineId } from "./catalog";
 import { Match, randomOpening, type MatchEnd, type Side } from "./match";
 
@@ -45,14 +45,32 @@ const idle = (engines: Record<Side, EngineId>): MatchState => ({
 export function useMatch(referee: RefObject<EngineClient | null>, engines: Record<Side, EngineId>) {
   const [state, setState] = useState<MatchState>(() => idle(engines));
   const match = useRef<Match | null>(null);
+  /**
+   * Each side's brain from the last match that ended by its rules: the next
+   * match with the same engine plays it again instead of loading another.
+   * Phones run out of memory for engines loaded game after game.
+   */
+  const pool = useRef<Partial<Record<Side, { id: EngineId; brain: Brain }>>>({});
 
+  /** Stops the match; brains of one abandoned mid-game are stopped too. */
   const stop = useCallback(() => {
-    match.current?.stop();
+    const current = match.current;
     match.current = null;
+    if (current && !current.isFinished) {
+      current.stop();
+      pool.current = {};
+    }
   }, []);
 
+  /** Stops everything and lets the engines go. */
+  const release = useCallback(() => {
+    stop();
+    for (const kept of Object.values(pool.current)) kept?.brain.dispose();
+    pool.current = {};
+  }, [stop]);
+
   // Stop for good when the page goes.
-  useEffect(() => stop, [stop]);
+  useEffect(() => release, [release]);
 
   // Show the chosen names before a match starts.
   useEffect(() => {
@@ -66,10 +84,16 @@ export function useMatch(referee: RefObject<EngineClient | null>, engines: Recor
       stop();
       const progress = (side: Side, fraction: number) =>
         setState((s) => (s.status === "loading" ? { ...s, download: { side, fraction } } : s));
-      const brains = {
-        black: createBrain(setup.engines.black, (fraction) => progress("black", fraction)),
-        white: createBrain(setup.engines.white, (fraction) => progress("white", fraction)),
+      const brainFor = (side: Side): Brain => {
+        const id = setup.engines[side];
+        const kept = pool.current[side];
+        if (kept && kept.id === id) return kept.brain;
+        kept?.brain.dispose();
+        const brain = createBrain(id, client, (fraction) => progress(side, fraction));
+        pool.current[side] = { id, brain };
+        return brain;
       };
+      const brains = { black: brainFor("black"), white: brainFor("white") };
       const current = new Match(client, brains, {
         size: setup.size,
         rule: setup.rule,
@@ -98,7 +122,11 @@ export function useMatch(referee: RefObject<EngineClient | null>, engines: Recor
           },
         }));
       current.onLoading = (side) => live((s) => ({ ...s, loading: side, download: null }));
-      current.onEnd = (end) => live((s) => ({ ...s, status: "over", thinking: null, download: null, end }));
+      current.onEnd = (end) => {
+        // A match that failed has stopped its brains.
+        if (!current.isFinished && match.current === current) pool.current = {};
+        live((s) => ({ ...s, status: "over", thinking: null, download: null, end }));
+      };
       setState({
         ...idle(setup.engines),
         status: "loading",
@@ -126,5 +154,12 @@ export function useMatch(referee: RefObject<EngineClient | null>, engines: Recor
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop, engines.black, engines.white]);
 
-  return { state, start, pause, resume, reset };
+  /** Abandons the match, clears the board and unloads the engines. */
+  const leave = useCallback(() => {
+    release();
+    setState(idle(engines));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [release, engines.black, engines.white]);
+
+  return { state, start, pause, resume, reset, leave };
 }
