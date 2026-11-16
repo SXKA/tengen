@@ -407,7 +407,7 @@ fn reductions() -> &'static [[u8; 64]; 64] {
         let mut t = [[0; 64]; 64];
         for (d, row) in t.iter_mut().enumerate().skip(1) {
             for (m, r) in row.iter_mut().enumerate().skip(1) {
-                *r = (0.4 + (d as f64).ln() * (m as f64).ln() / 2.2) as u8;
+                *r = (0.5 + (d as f64).ln() * (m as f64).ln() / 1.4) as u8;
             }
         }
         t
