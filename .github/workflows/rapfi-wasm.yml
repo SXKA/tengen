@@ -1,0 +1,104 @@
+name: Rapfi WASM
+
+# Compiles Rapfi (https://github.com/dhbloo/rapfi, GPL-3.0) to WebAssembly
+# for the website's engine matches, and pushes the result to the branch
+# rapfi-wasm/<run id>, ready for a pull request. The files go to
+# web/public/engines/rapfi: a single-threaded and a multi-threaded build,
+# both with SIMD, the classical models and two configs (classical, NNUE)
+# from https://github.com/dhbloo/rapfi-networks (CC0). The NNUE weights are
+# large and are fetched by the page only when a game needs them.
+on:
+  workflow_dispatch:
+    inputs:
+      rapfi:
+        description: Rapfi commit, branch or tag
+        default: master
+      networks:
+        description: rapfi-networks commit, branch or tag
+        default: 7eeb19b55219a48138756293f92211a1539bab4d
+      emsdk:
+        description: Emscripten version
+        default: latest
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi
+          ref: ${{ inputs.rapfi }}
+          path: rapfi
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi-networks
+          ref: ${{ inputs.networks }}
+          path: networks
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ inputs.emsdk }}
+      - name: Build
+        run: |
+          # Nothing is preloaded: the page writes the configs and weights into
+          # the engine's file system before it starts.
+          mkdir -p rapfi/Networks
+          : > rapfi/Networks/wasm_preloads.txt
+          for threads in single multi; do
+            flag=OFF
+            [ "$threads" = single ] && flag=ON
+            emcmake cmake -S rapfi/Rapfi -B "build-$threads" -DCMAKE_BUILD_TYPE=Release \
+              -DNO_COMMAND_MODULES=ON -DNO_MULTI_THREADING=$flag -DUSE_WASM_SIMD=ON
+            cmake --build "build-$threads" -j "$(nproc)"
+          done
+          ls -la build-*/rapfi-*
+      - name: Collect
+        run: |
+          out=web/public/engines/rapfi
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp build-single/rapfi-single-simd128.js build-single/rapfi-single-simd128.wasm "$out/"
+          cp build-multi/rapfi-multi-simd128.js build-multi/rapfi-multi-simd128.wasm "$out/"
+          cp networks/classical/model210901.bin networks/classical/model260809.bin "$out/"
+          # Piskvork coordinates (x is the column), as every other brain uses.
+          sed 's/^coord_conversion_mode = .*/coord_conversion_mode = "none"/' \
+            networks/config-example/config.toml > "$out/config-nnue.toml"
+          sed 's/^coord_conversion_mode = .*/coord_conversion_mode = "none"/' \
+            networks/config-example/gomocalc-classical260809.toml > "$out/config-classical.toml"
+          grep -q 'coord_conversion_mode = "none"' "$out/config-nnue.toml" "$out/config-classical.toml"
+          rapfi=$(git -C rapfi rev-parse HEAD)
+          networks=$(git -C networks rev-parse HEAD)
+          cat > "$out/NOTICE.md" <<EOF
+          # Rapfi
+
+          These files are built from [Rapfi](https://github.com/dhbloo/rapfi) by dhbloo,
+          licensed under the GNU General Public License v3.0, at commit
+          [\`$rapfi\`](https://github.com/dhbloo/rapfi/tree/$rapfi), with Emscripten $(emcc --version | head -1 | sed 's/.*) //').
+          The source for this build is that commit; \`.github/workflows/rapfi-wasm.yml\`
+          is how it was compiled.
+
+          The models and configs come from [rapfi-networks](https://github.com/dhbloo/rapfi-networks)
+          (CC0) at commit \`$networks\`, with Piskvork coordinates. The page fetches the NNUE
+          weights from that commit when a game needs them.
+          EOF
+          echo "$networks" > "$out/networks-commit.txt"
+          ls -la "$out"
+          {
+            echo '### Rapfi WASM'
+            echo "rapfi $rapfi, networks $networks"
+            echo
+            ls -la "$out" | sed 's/^/    /'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="rapfi-wasm/${{ github.run_id }}"
+          git switch -c "$branch"
+          git add web/public/engines/rapfi
+          git commit -m "Rapfi WASM build from Rapfi WASM run ${{ github.run_id }}"
+          git push origin "$branch"
