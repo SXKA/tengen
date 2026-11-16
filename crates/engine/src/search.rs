@@ -457,20 +457,20 @@ impl Default for Params {
     fn default() -> Params {
         Params {
             rfp_depth: 7,
-            rfp_margin: 70,
-            rfp_improving: 30,
+            rfp_margin: 57,
+            rfp_improving: 31,
             razor_depth: 3,
-            razor_base: 150,
-            razor_margin: 120,
+            razor_base: 116,
+            razor_margin: 98,
             futility_depth: 3,
-            futility_base: 120,
-            futility_margin: 100,
+            futility_base: 116,
+            futility_margin: 99,
             lmp_base: 3,
-            lmr_base: 60,
-            lmr_scale: 100,
-            lmr_history: 6000,
-            fail_high_margin: 20,
-            aspiration: 20,
+            lmr_base: 62,
+            lmr_scale: 101,
+            lmr_history: 5893,
+            fail_high_margin: 13,
+            aspiration: 19,
         }
     }
 }
