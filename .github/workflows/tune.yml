@@ -8,7 +8,8 @@ name: Tune
 # freestyle, weights-RULE.txt for the other rules.
 #
 # With a teacher, Rapfi evaluates every position the fit trains on, and the
-# fit learns those evaluations instead of only the game results.
+# fit learns those evaluations instead of only the game results. With an
+# earlier run as well, its labels are reused unless relabel is set.
 on:
   workflow_dispatch:
     inputs:
@@ -39,6 +40,10 @@ on:
         default: "1"
       per_code:
         description: Also refine every pattern code on its own
+        type: boolean
+        default: false
+      relabel:
+        description: With a teacher and an earlier run, label its games again instead of reusing its labels
         type: boolean
         default: false
 
@@ -124,7 +129,7 @@ jobs:
 
   label:
     needs: [build, selfplay, rapfi]
-    if: ${{ !cancelled() && inputs.teacher != 'none' && needs.rapfi.result == 'success' && needs.selfplay.result != 'failure' }}
+    if: ${{ !cancelled() && inputs.teacher != 'none' && (inputs.reuse_run == '' || inputs.relabel) && needs.rapfi.result == 'success' && needs.selfplay.result != 'failure' }}
     strategy:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
@@ -174,6 +179,15 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           pattern: games-*
+          path: artifacts
+          merge-multiple: true
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+      - name: Download the earlier run's labels
+        if: inputs.reuse_run != '' && inputs.teacher != 'none' && !inputs.relabel
+        uses: actions/download-artifact@v8
+        with:
+          pattern: labelled-*
           path: artifacts
           merge-multiple: true
           run-id: ${{ inputs.reuse_run }}
