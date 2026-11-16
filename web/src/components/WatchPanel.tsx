@@ -4,6 +4,7 @@ import type { Text } from "../i18n";
 import { ENGINES, engine, unavailable, type EngineId } from "../match/catalog";
 import type { MatchState, MatchSetup } from "../match/useMatch";
 import type { Side } from "../match/match";
+import { WinBar } from "./WinBar";
 
 /** Think times offered, in milliseconds. */
 export const THINK_TIMES = [200, 500, 1000, 2000, 5000, 10000];
@@ -20,12 +21,8 @@ interface Props {
   onStop: () => void;
   colorName: (side: Side) => string;
   name: (move: Packed) => string;
-}
-
-function formatRate(nps: number): string {
-  if (nps >= 1e6) return `${(nps / 1e6).toFixed(1)}M`;
-  if (nps >= 1e3) return `${Math.round(nps / 1e3)}k`;
-  return `${Math.round(nps)}`;
+  /** Black's chance to win, from the engines' scores. */
+  chance: number | null;
 }
 
 export function WatchPanel({
@@ -40,6 +37,7 @@ export function WatchPanel({
   onStop,
   colorName,
   name,
+  chance,
 }: Props) {
   const sides = ["black", "white"] as const;
   const { status, end, names, thinking, download } = state;
@@ -51,7 +49,6 @@ export function WatchPanel({
   switch (status) {
     case "idle":
       heading = t.watchIdle;
-      note = t.watchIdleNote;
       break;
     case "loading": {
       const side = download?.side ?? state.loading;
@@ -100,108 +97,91 @@ export function WatchPanel({
   const running = status === "loading" || status === "running" || status === "paused";
   const line = thinking ? (state.info[thinking]?.pv ?? []) : [];
 
+  const problems = sides
+    .map((side) => [side, unavailable(setup.engines[side], setup.rule, setup.size)] as const)
+    .filter(([, problem]) => problem !== null);
+  const problemText = (problem: string | null) =>
+    problem === "rule"
+      ? t.notForRule
+      : problem === "size"
+        ? t.notForSize
+        : problem === "mobile"
+          ? t.notMobile
+          : t.notIsolated;
+  const chanceText =
+    chance !== null && status !== "idle" && status !== "over" ? t.blackShare(Math.round(chance * 100)) : "";
+
   return (
     <>
       <section className="status" aria-live="polite">
-        <h1 className={status === "running" || status === "loading" ? "status-text busy" : "status-text"}>{heading}</h1>
+        <div className="status-head">
+          <h1 className={status === "running" || status === "loading" ? "status-text busy" : "status-text"}>
+            {heading}
+          </h1>
+          <span className="chance">{chanceText}</span>
+        </div>
+        <WinBar black={status === "idle" ? null : chance} label={t.winChance} />
         <p className="status-note">{note}</p>
+        {line.length > 0 && (
+          <p className="line" title={thinking ? state.info[thinking]?.message : undefined}>
+            <span className="line-label">{t.line}</span> {line.slice(0, 8).map(name).join(" ")}
+          </p>
+        )}
       </section>
 
-      <section className="readout">
-        <table className="sides">
-          <tbody>
-            {sides.map((side) => {
-              const info = state.info[side];
-              return (
-                <tr key={side} className={thinking === side ? "thinking" : ""}>
-                  <th scope="row">
-                    <span className={`swatch swatch-${side}`} aria-hidden="true" />
-                    {names[side]}
-                  </th>
-                  <td>
-                    <span className="unit">{t.depth}</span> {info?.depth ?? "–"}
-                  </td>
-                  <td>
-                    {info?.speed !== undefined ? formatRate(info.speed) : "–"}{" "}
-                    <span className="unit">{t.perSecond}</span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <div className="line" title={thinking ? state.info[thinking]?.message : undefined}>
-          <span className="line-label">{t.line}</span>
-          <span className="line-moves">{line.length > 0 ? line.slice(0, 12).map(name).join(" ") : "–"}</span>
-        </div>
-      </section>
+      <div className="actions">
+        {running ? (
+          <button onClick={onStop}>{t.stop}</button>
+        ) : (
+          <button className="primary" onClick={onStart} disabled={blocked !== undefined}>
+            {t.start}
+          </button>
+        )}
+        {status === "paused" ? (
+          <button onClick={onResume}>{t.resume}</button>
+        ) : (
+          <button onClick={onPause} disabled={!running}>
+            {t.pause}
+          </button>
+        )}
+      </div>
 
-      <section className="controls">
-        <div className="actions">
-          {running ? (
-            <button onClick={onStop}>{t.stop}</button>
-          ) : (
-            <button className="primary" onClick={onStart} disabled={blocked !== undefined}>
-              {t.start}
-            </button>
-          )}
-          {status === "paused" ? (
-            <button onClick={onResume}>{t.resume}</button>
-          ) : (
-            <button onClick={onPause} disabled={!running}>
-              {t.pause}
-            </button>
-          )}
-        </div>
-
-        {sides.map((side) => {
-          const chosen = setup.engines[side];
-          const problem = unavailable(chosen, setup.rule, setup.size);
-          return (
-            <fieldset key={side} className="pick">
-              <legend>
-                <span className={`swatch swatch-${side}`} aria-hidden="true" />
-                {t.engineFor(colorName(side))}
-              </legend>
-              <select
-                value={chosen}
-                disabled={running}
-                onChange={(e) => onEngine(side, e.target.value as EngineId)}
-                aria-label={t.engineFor(colorName(side))}
-              >
-                {ENGINES.map((e) => (
-                  <option key={e.id} value={e.id} disabled={unavailable(e.id, setup.rule, setup.size) !== null}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={setup.ms[side]}
-                disabled={running}
-                onChange={(e) => onTime(side, Number(e.target.value))}
-                aria-label={t.thinkTime}
-              >
-                {THINK_TIMES.map((ms) => (
-                  <option key={ms} value={ms}>
-                    {t.seconds(ms / 1000)}
-                  </option>
-                ))}
-              </select>
-              <p className="note">
-                {problem === "rule"
-                  ? t.notForRule
-                  : problem === "size"
-                    ? t.notForSize
-                    : problem === "isolation"
-                      ? t.notIsolated
-                      : problem === "mobile"
-                        ? t.notMobile
-                        : t.engineNotes[engine(chosen).id]}
-              </p>
-            </fieldset>
-          );
-        })}
-      </section>
+      <div className="sides">
+        {sides.map((side) => (
+          <div key={side} className={thinking === side ? "side thinking" : "side"}>
+            <span className={`swatch swatch-${side}`} aria-hidden="true" />
+            <select
+              value={setup.engines[side]}
+              disabled={running}
+              onChange={(e) => onEngine(side, e.target.value as EngineId)}
+              aria-label={t.engineFor(colorName(side))}
+            >
+              {ENGINES.map((e) => (
+                <option key={e.id} value={e.id} disabled={unavailable(e.id, setup.rule, setup.size) !== null}>
+                  {e.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={setup.ms[side]}
+              disabled={running}
+              onChange={(e) => onTime(side, Number(e.target.value))}
+              aria-label={t.thinkTime}
+            >
+              {THINK_TIMES.map((ms) => (
+                <option key={ms} value={ms}>
+                  {t.seconds(ms / 1000)}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        {problems.map(([side, problem]) => (
+          <p key={side} className="note">
+            {engine(setup.engines[side]).name}：{problemText(problem)}
+          </p>
+        ))}
+      </div>
     </>
   );
 }

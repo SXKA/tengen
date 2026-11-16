@@ -64,6 +64,14 @@ const en = {
   boardLabel: (size: number) => `${size} by ${size} gomoku board`,
   lastMove: (who: string, c: string) => `${who} played ${c}`,
   modes: "Mode",
+  setup: "Game settings",
+  playSummary: (rule: string, size: number, color: string, level: string) =>
+    `${rule} · ${size}×${size} · you play ${color} · ${level}`,
+  watchSummary: (rule: string, size: number, random: boolean) =>
+    `${rule} · ${size}×${size}${random ? " · random opening" : ""}`,
+  view: "Show on the board",
+  threatsShort: "Fours",
+  numbersShort: "Move numbers",
   modePlay: "Play",
   modeWatch: "Watch engines",
   watchIdle: "Pick the engines and start",
@@ -106,9 +114,7 @@ const en = {
     slowrenju: "Tianyi Hao's engine, among the best at renju in the 2010s.",
     pela: "Petr Laštovička's engine from Piskvork, Gomocup champion in 2005 and 2006.",
   },
-  enginesCredit:
-    "Rapfi by Haobin Duan and contributors, SlowRenju by Tianyi Hao and Pela by Petr Laštovička, all under the GPL.",
-  engineSources: "Engine sources",
+  engineSources: "Engines and licenses",
 };
 
 const zh: typeof en = {
@@ -163,6 +169,13 @@ const zh: typeof en = {
   boardLabel: (size: number) => `${size} 路五子棋盤`,
   lastMove: (who: string, c: string) => `${who}棋下在 ${c}`,
   modes: "模式",
+  setup: "對局設定",
+  playSummary: (rule: string, size: number, color: string, level: string) =>
+    `${rule} · ${size} 路 · 執${color} · ${level}`,
+  watchSummary: (rule: string, size: number, random: boolean) => `${rule} · ${size} 路${random ? " · 隨機開局" : ""}`,
+  view: "棋盤顯示",
+  threatsShort: "衝四點",
+  numbersShort: "手序",
   modePlay: "對弈",
   modeWatch: "觀戰",
   watchIdle: "選好引擎後開始",
@@ -204,8 +217,7 @@ const zh: typeof en = {
     slowrenju: "郝天一的引擎，2010 年代連珠頂尖之一。",
     pela: "Petr Laštovička 的 Piskvork 內建引擎，2005、2006 年 Gomocup 冠軍。",
   },
-  enginesCredit: "Rapfi 由 Haobin Duan 等人、SlowRenju 由郝天一、Pela 由 Petr Laštovička 開發，皆以 GPL 授權。",
-  engineSources: "引擎原始碼",
+  engineSources: "引擎與授權",
 };
 
 export const text = { en, zh };
