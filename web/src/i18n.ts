@@ -80,6 +80,9 @@ const en = {
   endTimeout: (name: string) => `${name} took too long to move.`,
   endError: (name: string, detail: string) => `${name} stopped: ${detail}`,
   watchAborted: "The game stopped",
+  engineFailed: "The engine cannot run",
+  engineFailedNote: (reason: string) =>
+    `${reason}. Close this tab and open the site again; on a phone, closing other tabs helps too.`,
   endAborted: (detail: string) => `The referee stopped: ${detail}. Press Start to play again.`,
   start: "Start",
   pause: "Pause",
@@ -95,6 +98,7 @@ const en = {
   notForRule: "This engine does not play these rules.",
   notForSize: "This engine does not play on this board.",
   notIsolated: "This engine needs a browser with shared memory.",
+  notMobile: "This engine does not run on iPhones and iPads.",
   engineNotes: {
     tengen: "This site's engine.",
     rapfi: "Today's strongest open engine, with its neural network (about 10 MB per rule, downloaded once).",
@@ -175,6 +179,8 @@ const zh: typeof en = {
   endTimeout: (name: string) => `${name} 超過時間未落子。`,
   endError: (name: string, detail: string) => `${name} 停止運作：${detail}`,
   watchAborted: "對局中止",
+  engineFailed: "引擎無法執行",
+  engineFailedNote: (reason: string) => `${reason}。請關閉這個分頁後重新打開網站；手機上關掉其他分頁也有幫助。`,
   endAborted: (detail: string) => `裁判引擎停止運作：${detail}。按「開始」可以再下一局。`,
   start: "開始",
   pause: "暫停",
@@ -190,6 +196,7 @@ const zh: typeof en = {
   notForRule: "這個引擎不支援這個規則。",
   notForSize: "這個引擎不支援這個棋盤大小。",
   notIsolated: "這個引擎需要支援共享記憶體的瀏覽器。",
+  notMobile: "這個引擎無法在 iPhone、iPad 上執行。",
   engineNotes: {
     tengen: "本站的引擎。",
     rapfi: "目前最強的開源引擎，使用神經網路（每種規則約 10 MB，只下載一次）。",
