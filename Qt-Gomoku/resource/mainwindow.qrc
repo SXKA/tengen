@@ -1,5 +1,0 @@
-<RCC>
-  <qresource prefix="/MainWindow">
-    <file>picture/background.jpg</file>
-  </qresource>
-</RCC>

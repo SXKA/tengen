@@ -1,0 +1,9 @@
+[package]
+name = "tengen-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tengen-engine = { path = "../engine" }
