@@ -6,7 +6,7 @@
 #
 # SOURCE is a checkout of https://github.com/plastovicka/Piskvork (Pela) or
 # https://github.com/wind23/SlowRenju. The WebAssembly build (the default)
-# needs emcc and writes OUT/<brain>.js and OUT/<brain>.wasm; the native one
+# needs em++ (Emscripten) and writes OUT/<brain>.js and OUT/<brain>.wasm; the native one
 # writes OUT/pbrain-<brain>, which speaks the Piskvork protocol on the
 # console.
 set -eu
@@ -58,5 +58,5 @@ else
     flags="$flags -pthread"
   fi
   # shellcheck disable=SC2086
-  emcc $flags $includes $sources $link -o "$out/$brain.js"
+  em++ $flags $includes $sources $link -o "$out/$brain.js"
 fi
