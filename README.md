@@ -11,7 +11,7 @@ Tengen is a gomoku and renju engine written in Rust. It plays in the browser, co
 
 ## Play
 
-- **In the browser**: open the website linked in the repository's About box. The engine runs locally in a
+- **In the browser**: open [tengen-bice.vercel.app](https://tengen-bice.vercel.app). The engine runs locally in a
   Web Worker; nothing is sent to a server.
 - **In Piskvork or another Gomocup manager**: download `pbrain-tengen` for your system from
   [Releases](https://github.com/SXKA/tengen/releases/latest) and add it as a brain. It supports boards from 5×5 to

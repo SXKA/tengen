@@ -1,0 +1,31 @@
+name: Delete branches
+
+# Deletes the named branches. Branches of merged pull requests are removed by
+# the "Automatically delete head branches" setting; this is for the ones that
+# never had a pull request, such as SPRT experiments (exp/*) and tuning
+# results (tune/*).
+on:
+  workflow_dispatch:
+    inputs:
+      branches:
+        description: Branches to delete (space-separated)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NAMED: ${{ inputs.branches }}
+        run: |
+          default=$(gh api "repos/$REPO" --jq .default_branch)
+          for branch in $NAMED; do
+            [ "$branch" = "$default" ] && continue
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" && echo "deleted $branch" || echo "could not delete $branch"
+          done
