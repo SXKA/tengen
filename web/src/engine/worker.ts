@@ -9,7 +9,7 @@
  */
 import singleUrl from "./tengen.wasm?url";
 import threadedUrl from "./tengen-mt.wasm?url";
-import type { Packed, Request, Response, Snapshot } from "./protocol";
+import { RULE_NUMBER, type Packed, type Request, type Response, type Snapshot } from "./protocol";
 
 interface Exports {
   /** Exported by the single-threaded build only; the threaded one imports it. */
@@ -18,7 +18,7 @@ interface Exports {
   __tls_align: WebAssembly.Global;
   tg_set_threads(threads: number): void;
   tg_alloc(size: number, align: number): number;
-  tg_new(size: number): number;
+  tg_new(size: number, rule: number): number;
   tg_play(x: number, y: number): number;
   tg_undo(): number;
   tg_think(ms: number, depth: number): number;
@@ -88,7 +88,7 @@ const ready = (async () => {
     const helper = new Worker(new URL("./helper.ts", import.meta.url), { type: "module" });
     helper.postMessage({ module, memory, stackTop: stack + HELPER_STACK, tls, id });
   }
-  engine.tg_new(size);
+  engine.tg_new(size, 0);
   engine.tg_set_threads(threads);
   post({ kind: "ready", mate: engine.tg_mate(), scale: engine.tg_scale(), threads });
 })();
@@ -114,7 +114,7 @@ scope.onmessage = async (event: MessageEvent<{ id: number; request: Request }>) 
   const { id, request } = event.data;
   switch (request.kind) {
     case "new":
-      if (engine.tg_new(request.size) !== 0) {
+      if (engine.tg_new(request.size, RULE_NUMBER[request.rule]) !== 0) {
         post({ kind: "error", id, message: `unsupported board size ${request.size}` });
         return;
       }

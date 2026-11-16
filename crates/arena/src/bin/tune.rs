@@ -6,7 +6,8 @@
 //! tengen-tune init --out weights.txt
 //! ```
 //!
-//! `selfplay` plays fast in-process games from balanced random openings.
+//! `selfplay` plays fast in-process games from balanced random openings,
+//! under any rule (`--rule`); the records say which, and `fit` follows them.
 //! `fit` replays them, keeps positions without immediate tactics, and fits
 //! the evaluation so that `sigmoid(eval / SCALE)` predicts each game's result
 //! for the side to move, using the factored model (per line pattern and
@@ -31,10 +32,11 @@ use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THR
 use tengen_engine::movegen;
 use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 use tengen_engine::search::MATE_BOUND;
-use tengen_engine::{Board, Color, Engine, Limits};
+use tengen_engine::{Board, Color, Engine, Limits, Rule};
 
 const USAGE: &str = "usage:
-  tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] --out FILE [--weights FILE]
+  tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] [--rule freestyle]
+                       --out FILE [--weights FILE]
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
@@ -50,12 +52,15 @@ fn main() {
     let number = |name: &str, default: u64| {
         flag(name).map_or(default, |v| v.parse().unwrap_or_else(|_| fail(&format!("bad {name}"))))
     };
+    let rule = flag("--rule").map_or(Rule::Freestyle, |r| {
+        Rule::parse(&r).unwrap_or_else(|| fail(&format!("unknown rule {r}")))
+    });
     let weights = match flag("--weights") {
         Some(path) => {
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
             Weights::parse(&text).unwrap_or_else(|e| fail(&format!("{path}: {e}")))
         }
-        None => Weights::default(),
+        None => Weights::built_in(rule),
     };
     let out = flag("--out").unwrap_or_else(|| fail("--out is required"));
     match args.first().map(String::as_str) {
@@ -68,6 +73,7 @@ fn main() {
                 threads: number("--threads", threads) as usize,
                 seed: number("--seed", 1),
                 size: number("--size", 15) as usize,
+                rule,
                 out,
             });
         }
@@ -106,6 +112,7 @@ struct SelfPlay {
     threads: usize,
     seed: u64,
     size: usize,
+    rule: Rule,
     out: String,
 }
 
@@ -131,7 +138,7 @@ fn selfplay(cfg: SelfPlay) {
                     let mut rng = Rng(cfg.seed.wrapping_mul(0x1000_0000_01b3) ^ index as u64);
                     let (outcome, moves) = play(&mut engine, &mut rng, &cfg);
                     let mut out = out.lock().unwrap();
-                    let _ = write_game(&mut *out, cfg.size, outcome, &moves);
+                    let _ = write_game(&mut *out, cfg.size, cfg.rule, outcome, &moves);
                     let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if finished.is_multiple_of(100) || finished == cfg.games {
                         let _ = out.flush();
@@ -149,8 +156,8 @@ fn selfplay(cfg: SelfPlay) {
 
 /// One self-play game, played until a five or a full board.
 fn play(engine: &mut Engine, rng: &mut Rng, cfg: &SelfPlay) -> (Outcome, Vec<tengen_engine::Pos>) {
-    let mut board = Board::new(cfg.size);
-    for pos in opening(cfg.size, rng, engine) {
+    let mut board = Board::with_rule(cfg.size, cfg.rule);
+    for pos in opening(cfg.size, cfg.rule, rng, engine) {
         board.play(pos);
     }
     engine.clear();
@@ -285,9 +292,10 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
     }
     let per_game = par_chunks(&lines, |index, line| {
         let mut samples = Vec::new();
-        let Some((size, outcome, moves)) = parse_game(line) else {
+        let Some(game) = parse_game(line) else {
             return (index, samples);
         };
+        let (outcome, moves) = (game.outcome, &game.moves);
         // The filter search is capped: a few positions with many fours on
         // both sides make the threat search explode, and those are not
         // quiet anyway.
@@ -296,7 +304,7 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
             nodes: Some(FILTER_NODES),
             ..Limits::default()
         };
-        let mut board = Board::new(size);
+        let mut board = game.board();
         for (ply, &pos) in moves.iter().enumerate() {
             board.play(pos);
             if ply < 3 || ply + 4 >= moves.len() || !is_quiet(&board) {
@@ -569,12 +577,12 @@ fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
     let lines = read_lines(paths);
     let per_game = par_chunks(&lines, |index, line| {
         let mut samples = Vec::new();
-        let Some((size, _, moves)) = parse_game(line) else {
+        let Some(game) = parse_game(line) else {
             return (index, samples);
         };
-        let mut board = Board::new(size);
+        let mut board = game.board();
         let mut list = Vec::new();
-        for &played in &moves {
+        for &played in &game.moves {
             if board.ply() >= 2
                 && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
                 && let Some(target) = list.iter().position(|m| m.pos == played)

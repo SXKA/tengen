@@ -1,7 +1,7 @@
 //! Balanced random openings.
 
 use tengen_engine::pattern::Pattern4;
-use tengen_engine::{Board, Engine, Limits, Pos};
+use tengen_engine::{Board, Engine, Limits, Pos, Rule};
 
 /// Tiny deterministic generator (splitmix64).
 pub struct Rng(pub u64);
@@ -21,17 +21,17 @@ impl Rng {
 }
 
 /// A random opening near the center that a short search judges balanced.
-pub fn opening(size: usize, rng: &mut Rng, engine: &mut Engine) -> Vec<Pos> {
+pub fn opening(size: usize, rule: Rule, rng: &mut Rng, engine: &mut Engine) -> Vec<Pos> {
     let center = size / 2;
     loop {
         let stones = 2 + rng.below(4);
-        let mut board = Board::new(size);
+        let mut board = Board::with_rule(size, rule);
         let mut moves = Vec::new();
         while moves.len() < stones {
             let (x, y) = (center - 3 + rng.below(7), center - 3 + rng.below(7));
             let pos = Pos::new(x, y);
             let near = moves.is_empty() || board.is_candidate(pos);
-            if board.is_empty(pos) && near {
+            if near && board.is_legal(pos) {
                 board.play(pos);
                 moves.push(pos);
             }

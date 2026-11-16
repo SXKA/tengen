@@ -23,6 +23,8 @@ interface Props {
   /** Whether clicks place stones right now. */
   interactive: boolean;
   ghosts: Ghost[];
+  /** Cells the side to move may not play (renju, Black). */
+  forbidden: Packed[];
   threats: { black: Int8Array; white: Int8Array } | null;
   label: string;
   onPlace: (move: Packed) => void;
@@ -46,7 +48,19 @@ function starPoints(size: number): [number, number][] {
 
 const at = (i: number) => C + i * C;
 
-export function Board({ size, moves, five, human, interactive, ghosts, threats, label, onPlace, onPending }: Props) {
+export function Board({
+  size,
+  moves,
+  five,
+  human,
+  interactive,
+  ghosts,
+  forbidden,
+  threats,
+  label,
+  onPlace,
+  onPending,
+}: Props) {
   const svg = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<Packed | null>(null);
   // On touch screens the first tap only marks the point; a second tap places.
@@ -55,6 +69,8 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
 
   const occupied = new Map<Packed, number>();
   moves.forEach((m, i) => occupied.set(m, i));
+  const banned = new Set(forbidden);
+  const open = (move: Packed) => !occupied.has(move) && !banned.has(move);
   const last = moves.length > 0 ? moves[moves.length - 1] : null;
   const extent = (size + 1) * C;
 
@@ -70,7 +86,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
   }
 
   function place(move: Packed) {
-    if (!interactive || occupied.has(move)) return;
+    if (!interactive || !open(move)) return;
     setPending(null);
     onPending?.(false);
     onPlace(move);
@@ -78,7 +94,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
 
   function onPointerUp(event: PointerEvent<SVGSVGElement>) {
     const move = cellAt(event);
-    if (move === null || !interactive || occupied.has(move)) return;
+    if (move === null || !interactive || !open(move)) return;
     if (event.pointerType === "touch" && pending !== move) {
       setPending(move);
       onPending?.(true);
@@ -115,7 +131,7 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
   }
 
   const preview = hover ?? pending;
-  const showHover = interactive && preview !== null && !occupied.has(preview) && ghosts.length === 0;
+  const showHover = interactive && preview !== null && open(preview) && ghosts.length === 0;
   // Sorting by column, then row, puts the two ends of any line first and last.
   const fiveCells = five.map(unpack).sort((a, b) => a.x - b.x || a.y - b.y);
   const fiveEnds = fiveCells.length >= 2 ? [fiveCells[0], fiveCells[fiveCells.length - 1]] : null;
@@ -216,6 +232,20 @@ export function Board({ size, moves, five, human, interactive, ghosts, threats, 
             </g>
           );
         })}
+
+      {forbidden.map((m) => {
+        const { x, y } = unpack(m);
+        const r = C * 0.16;
+        return (
+          <path
+            key={`forbidden-${m}`}
+            className="forbidden"
+            d={`M${at(x) - r} ${at(y) - r}L${at(x) + r} ${at(y) + r}M${at(x) + r} ${at(y) - r}L${at(x) - r} ${at(y) + r}`}
+          >
+            <title>{coordinate(x, y, size)}</title>
+          </path>
+        );
+      })}
 
       {moves.map((m, i) => {
         const { x, y } = unpack(m);

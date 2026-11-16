@@ -1,0 +1,103 @@
+name: Versus Rapfi
+
+# Measure Tengen against Rapfi (https://github.com/dhbloo/rapfi), the
+# strongest open-source gomoku engine: once with its NNUE evaluation and once
+# with its classical evaluation only. Both play with the official weights
+# from https://github.com/dhbloo/rapfi-networks. Start it from the Actions
+# tab; every game is played (no early stop), so the Elo is unbiased.
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Games per opponent
+        default: "400"
+      turn_ms:
+        description: Milliseconds per move
+        default: "200"
+      rule:
+        description: Game rule (Rapfi plays freestyle, standard and renju)
+        type: choice
+        options: [freestyle, standard, renju]
+        default: freestyle
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  rapfi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi
+          path: rapfi
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi-networks
+          path: networks
+      - name: Build Rapfi
+        run: |
+          cmake -S rapfi/Rapfi -B build -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SSE=ON -DUSE_AVX2=ON -DUSE_AVX512=OFF -DUSE_BMI2=OFF -DUSE_VNNI=OFF -DNO_COMMAND_MODULES=ON
+          cmake --build build -j "$(nproc)"
+          strip build/pbrain-rapfi
+      - name: Set up both evaluations
+        run: |
+          mkdir -p dist/nnue dist/classical
+          cp build/pbrain-rapfi dist/nnue/
+          cp build/pbrain-rapfi dist/classical/
+          cp networks/config-example/config.toml networks/classical/*.bin networks/mix9svq/* dist/nnue/
+          cp networks/config-example/gomocalc-classical260809.toml dist/classical/config.toml
+          cp networks/classical/*.bin dist/classical/
+          {
+            echo '### Rapfi'
+            echo "rapfi $(git -C rapfi rev-parse --short HEAD), networks $(git -C networks rev-parse --short HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rapfi
+          path: dist
+
+  match:
+    needs: rapfi
+    strategy:
+      fail-fast: false
+      matrix:
+        evaluation: [nnue, classical]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: cargo build --release -p tengen-piskvork -p tengen-arena
+      - uses: actions/download-artifact@v8
+        with:
+          name: rapfi
+          path: rapfi
+      - name: Play
+        run: |
+          chmod +x rapfi/*/pbrain-rapfi
+          {
+            echo "### Tengen against Rapfi (${{ matrix.evaluation }})"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          target/release/tengen-arena \
+            --new target/release/pbrain-tengen \
+            --base rapfi/${{ matrix.evaluation }}/pbrain-rapfi \
+            --games ${{ inputs.games }} \
+            --turn-ms ${{ inputs.turn_ms }} \
+            --rule ${{ inputs.rule }} \
+            --concurrency "$(nproc)" \
+            --record games.txt \
+            --seed "${{ github.run_id }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: games-${{ matrix.evaluation }}
+          path: games.txt

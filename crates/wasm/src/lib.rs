@@ -13,8 +13,9 @@
 use std::sync::Mutex;
 
 use tengen_engine::eval::{self, SCALE};
+use tengen_engine::pattern::{Pattern4, Tables};
 use tengen_engine::search::{MATE, MATE_BOUND};
-use tengen_engine::{Board, Color, Engine, Info, Limits, Pos};
+use tengen_engine::{Board, Color, Engine, Info, Limits, Pos, Rule};
 
 #[cfg(target_arch = "wasm32")]
 mod host {
@@ -79,32 +80,29 @@ fn cell(board: &Board, x: u32, y: u32) -> Option<Pos> {
     (x < board.size() && y < board.size()).then(|| Pos::new(x, y))
 }
 
-/// The five (or longer) line through `pos` for the stone on it, if any.
-fn five_through(board: &Board, pos: Pos) -> Vec<Pos> {
+/// The stones in a row with `pos` along `dir`, `pos` included, sorted.
+fn line_through(board: &Board, pos: Pos, dir: usize) -> Vec<Pos> {
     let color = board.stone(pos);
-    for dir in 0..4 {
-        let mut line = vec![pos];
-        for side in [-1isize, 1] {
-            let mut k = side;
-            while let Some(q) = board.step(pos, dir, k)
-                && board.stone(q) == color
-            {
-                line.push(q);
-                k += side;
-            }
-        }
-        if line.len() >= 5 {
-            line.sort();
-            return line;
+    let mut line = vec![pos];
+    for side in [-1isize, 1] {
+        let mut k = side;
+        while let Some(q) = board.step(pos, dir, k)
+            && board.stone(q) == color
+        {
+            line.push(q);
+            k += side;
         }
     }
-    Vec::new()
+    line.sort();
+    line
 }
 
-/// Start a new game on a `size` board (5 to 20). Returns 0, or -1 for a bad
-/// size. The search table is kept but cleared.
+/// Start a new game on a `size` board (5 to 20) under `rule`, given by its
+/// Piskvork number (0 freestyle, 1 standard, 4 renju, 8 freestyle caro,
+/// 9 caro). Returns 0, or -1 for a bad size. The search table is kept but
+/// cleared.
 #[unsafe(no_mangle)]
-pub extern "C" fn tg_new(size: u32) -> i32 {
+pub extern "C" fn tg_new(size: u32, rule: u32) -> i32 {
     if !(5..=tengen_engine::board::MAX_SIZE as u32).contains(&size) {
         return -1;
     }
@@ -121,7 +119,7 @@ pub extern "C" fn tg_new(size: u32) -> i32 {
         }
     };
     *game = Some(Game {
-        board: Board::new(size as usize),
+        board: Board::with_rule(size as usize, Rule::from_piskvork(rule)),
         engine,
         five: Vec::new(),
     });
@@ -176,21 +174,22 @@ pub extern "C" fn tg_set_hash(megabytes: u32) {
 
 /// Play a stone for the side to move.
 ///
-/// Returns -1 if illegal (occupied, off the board, or the game is over),
-/// 0 if the game goes on, 1 or 2 if Black or White just made five, and 3 if
-/// the board is full.
+/// Returns -1 if illegal (occupied, off the board, forbidden for Black
+/// under renju rules, or the game is over), 0 if the game goes on, 1 or 2
+/// if Black or White just won, and 3 if the board is full.
 #[unsafe(no_mangle)]
 pub extern "C" fn tg_play(x: u32, y: u32) -> i32 {
     with_game(-1, |g| {
         let Some(pos) = cell(&g.board, x, y) else { return -1 };
-        if !g.five.is_empty() || !g.board.is_empty(pos) {
+        if !g.five.is_empty() || !g.board.is_legal(pos) {
             return -1;
         }
         let color = g.board.side_to_move();
+        let wins = g.board.p4(pos, color) == Pattern4::AFive;
+        let dir = g.board.five_direction(pos, color);
         g.board.play(pos);
-        let five = five_through(&g.board, pos);
-        if !five.is_empty() {
-            g.five = five;
+        if let (true, Some(dir)) = (wins, dir) {
+            g.five = line_through(&g.board, pos, dir);
             return color as i32 + 1;
         }
         if g.board.is_full() { 3 } else { 0 }
@@ -250,16 +249,30 @@ pub extern "C" fn tg_stone(x: u32, y: u32) -> i32 {
 }
 
 /// What a stone of `color` (1 Black, 2 White) would make on an empty cell,
-/// as a combination class from 0 (nothing) to 12 (five). -1 if occupied.
+/// as a combination class from 0 (nothing) to 12 (five). -1 if occupied,
+/// -2 where Black may not play under renju rules.
 #[unsafe(no_mangle)]
 pub extern "C" fn tg_threat(x: u32, y: u32, color: u32) -> i32 {
     with_game(-1, |g| {
         let color = if color == 1 { Color::Black } else { Color::White };
         match cell(&g.board, x, y) {
-            Some(p) if g.board.is_empty(p) => g.board.p4(p, color) as i32,
+            Some(p) if g.board.is_empty(p) => match g.board.p4(p, color) {
+                Pattern4::Forbidden if g.board.is_forbidden(p) => -2,
+                // A double three that turned out legal.
+                Pattern4::Forbidden => class(Tables::get().pattern4(g.board.pcode(p, color))),
+                p4 => class(p4),
+            },
             _ => -1,
         }
     })
+}
+
+/// A combination as 0 (nothing) to 12 (five).
+fn class(p4: Pattern4) -> i32 {
+    match p4 {
+        Pattern4::None | Pattern4::Forbidden => 0,
+        p4 => p4 as i32 - 1,
+    }
 }
 
 /// Static evaluation for the side to move.
@@ -307,8 +320,8 @@ mod tests {
 
     #[test]
     fn a_game_through_the_c_abi() {
-        assert_eq!(tg_new(3), -1);
-        assert_eq!(tg_new(15), 0);
+        assert_eq!(tg_new(3, 0), -1);
+        assert_eq!(tg_new(15, 0), 0);
         assert_eq!(tg_play(7, 7), 0);
         assert_eq!(tg_play(7, 7), -1);
         assert_eq!(tg_stone(7, 7), 1);
@@ -331,5 +344,22 @@ mod tests {
         assert_eq!(tg_think(10.0, 1), -1);
         assert_eq!(tg_move(0), 0);
         assert!(tg_scale() > 0.0 && tg_mate() == MATE);
+
+        // Renju: Black's double three at (8, 7) cannot be played, and
+        // White's overline wins.
+        assert_eq!(tg_new(15, 4), 0);
+        for (x, y) in [(6, 7), (0, 0), (7, 7), (0, 14), (8, 5), (14, 0), (8, 6), (14, 14)] {
+            assert_eq!(tg_play(x, y), 0);
+        }
+        assert_eq!(tg_threat(8, 7, 1), -2);
+        assert_eq!(tg_play(8, 7), -1);
+        // Standard: an overline does not win.
+        assert_eq!(tg_new(15, 1), 0);
+        for x in [0, 1, 2, 4, 5] {
+            assert_eq!(tg_play(x, 0), 0);
+            assert_eq!(tg_play(x, 10), 0);
+        }
+        assert_eq!(tg_play(3, 0), 0);
+        assert_eq!(tg_five_line(), 0);
     }
 }

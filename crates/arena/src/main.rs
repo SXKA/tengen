@@ -19,7 +19,7 @@ use tengen_arena::openings::{Rng, opening};
 use tengen_arena::record::{Outcome, write_game};
 use tengen_arena::sprt::{Pentanomial, Sprt};
 use tengen_engine::pattern::Pattern4;
-use tengen_engine::{Board, Color, Engine, Pos};
+use tengen_engine::{Board, Color, Engine, Pos, Rule};
 
 /// Command-line settings.
 #[derive(Clone, Debug)]
@@ -30,6 +30,7 @@ struct Options {
     games: usize,
     concurrency: usize,
     size: usize,
+    rule: Rule,
     turn_ms: u64,
     match_ms: u64,
     /// SPRT bounds in logistic Elo; `None` plays a fixed number of games.
@@ -47,6 +48,7 @@ impl Options {
             games: 1000,
             concurrency: std::thread::available_parallelism().map_or(1, |n| n.get()),
             size: 15,
+            rule: Rule::Freestyle,
             turn_ms: 200,
             match_ms: 0,
             sprt: None,
@@ -63,6 +65,10 @@ impl Options {
                 "--games" => o.games = number(value()?)? as usize,
                 "--concurrency" => o.concurrency = number(value()?)?.max(1) as usize,
                 "--size" => o.size = number(value()?)? as usize,
+                "--rule" => {
+                    let v = value()?;
+                    o.rule = Rule::parse(&v).ok_or(format!("--rule: unknown rule {v}"))?;
+                }
                 "--turn-ms" => o.turn_ms = number(value()?)?,
                 "--match-ms" => o.match_ms = number(value()?)?,
                 "--seed" => o.seed = number(value()?)?,
@@ -85,7 +91,7 @@ impl Options {
 }
 
 const USAGE: &str = "usage: tengen-arena --new BRAIN --base BRAIN [--games N] [--concurrency N]
-       [--size 15] [--turn-ms 200] [--match-ms 0] [--sprt ELO0,ELO1] [--seed 1] [--record FILE]";
+       [--size 15] [--rule freestyle|standard|renju|caro|freestyle-caro] [--turn-ms 200] [--match-ms 0] [--sprt ELO0,ELO1] [--seed 1] [--record FILE]";
 
 /// Play one game. `black` moves first after the opening stones.
 fn play_game(
@@ -94,12 +100,12 @@ fn play_game(
     white_path: &str,
     opening: &[Pos],
 ) -> (Outcome, Vec<Pos>, Option<String>) {
-    let mut board = Board::new(options.size);
+    let mut board = Board::with_rule(options.size, options.rule);
     for &pos in opening {
         board.play(pos);
     }
     // Brains in color order; who moves next is decided by the board.
-    let spawn = |path: &str| Brain::spawn(path, options.size, options.turn_ms, options.match_ms);
+    let spawn = |path: &str| Brain::spawn(path, options.size, options.rule, options.turn_ms, options.match_ms);
     let mut brains = match (spawn(black_path), spawn(white_path)) {
         (Ok(b), Ok(w)) => [b, w],
         (Err(e), _) | (_, Err(e)) => return (Outcome::Draw, board.moves().collect(), Some(format!("spawn: {e}"))),
@@ -151,6 +157,10 @@ fn play_game(
                 return (loses(color), board.moves().collect(), Some(error));
             }
         };
+        if color == Color::Black && board.is_forbidden(pos) {
+            let error = format!("Black played the forbidden {},{}", pos.x(), pos.y());
+            return (loses(color), board.moves().collect(), Some(error));
+        }
         let five = board.p4(pos, color) == Pattern4::AFive;
         board.play(pos);
         if five {
@@ -225,7 +235,7 @@ fn main() {
                     // Each pair's opening depends only on the seed and its
                     // index, so a run is reproducible at any concurrency.
                     let mut rng = Rng(options.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ index as u64);
-                    let opening = &opening(options.size, &mut rng, &mut engine);
+                    let opening = &opening(options.size, options.rule, &mut rng, &mut engine);
                     // The new engine plays Black in game 1 and White in game 2.
                     let (b1, w1) = (&options.new, &options.base);
                     let g1 = play_game(&options, b1, w1, opening);
@@ -242,7 +252,7 @@ fn main() {
                     if let Some(file) = &record {
                         let mut file = file.lock().unwrap();
                         for (outcome, moves, _) in [&g1, &g2] {
-                            let _ = write_game(&mut *file, options.size, *outcome, moves);
+                            let _ = write_game(&mut *file, options.size, options.rule, *outcome, moves);
                         }
                     }
 
@@ -291,6 +301,10 @@ fn main() {
     let (elo, error) = t.pairs.elo();
     let games = t.wins + t.draws + t.losses;
     println!("## Tengen arena\n");
+    println!(
+        "Rule {}, {}x{} board, {} ms a move.\n",
+        options.rule, options.size, options.size, options.turn_ms
+    );
     println!("| games | wins | draws | losses | Elo (95%) | pentanomial |");
     println!("|---|---|---|---|---|---|");
     println!(

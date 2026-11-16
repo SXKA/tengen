@@ -1,5 +1,5 @@
 /** Promise-based access to the engine worker. */
-import type { Packed, Request, Response, SearchInfo, Snapshot } from "./protocol";
+import type { Packed, Request, Response, RuleId, SearchInfo, Snapshot } from "./protocol";
 
 type Pending = { resolve: (value: Snapshot | Packed | null) => void; reject: (error: Error) => void };
 
@@ -59,8 +59,8 @@ export class EngineClient {
     });
   }
 
-  newGame(size: number) {
-    return this.send<Snapshot>({ kind: "new", size });
+  newGame(size: number, rule: RuleId) {
+    return this.send<Snapshot>({ kind: "new", size, rule });
   }
 
   play(move: Packed) {
