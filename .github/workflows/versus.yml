@@ -15,6 +15,9 @@ on:
       turn_ms:
         description: Milliseconds per move
         default: "200"
+      match_ms:
+        description: Milliseconds per side for the whole game (0 for none), as in Gomocup
+        default: "0"
       rule:
         description: Game rule (Rapfi plays freestyle, standard and renju)
         type: choice
@@ -74,6 +77,8 @@ jobs:
       fail-fast: false
       matrix:
         evaluation: [nnue, classical]
+        # Four machines share each opponent's games.
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
@@ -99,20 +104,21 @@ jobs:
             title="Rapfi NNUE against Rapfi classical"
           fi
           {
-            echo "### $title"
+            echo "### $title (part ${{ matrix.shard }} of 4)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           target/release/tengen-arena \
             --new "$new" \
             --base "$base" \
-            --games ${{ inputs.games }} \
+            --games $(( ${{ inputs.games }} / 4 )) \
             --turn-ms ${{ inputs.turn_ms }} \
+            --match-ms ${{ inputs.match_ms }} \
             --rule ${{ inputs.rule }} \
             --concurrency "$(nproc)" \
             --record games.txt \
-            --seed "${{ github.run_id }}" | tee -a "$GITHUB_STEP_SUMMARY"
+            --seed "${{ github.run_id }}${{ matrix.shard }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: games-${{ matrix.evaluation }}
+          name: games-${{ matrix.evaluation }}-${{ matrix.shard }}
           path: games.txt
