@@ -18,6 +18,9 @@ on:
       match_ms:
         description: Milliseconds per side for the whole game (0 for none), as in Gomocup
         default: "0"
+      tengen_turn_ms:
+        description: Milliseconds per move for Tengen only (time odds; empty for the same as Rapfi)
+        default: ""
       memory_mb:
         description: Memory per engine in MiB (Gomocup 2026 allows 1024)
         default: "160"
@@ -119,7 +122,9 @@ jobs:
           book="crates/arena/openings/${{ inputs.rule }}-${{ inputs.size }}.txt"
           openings=""
           [ -f "$book" ] && openings="--openings $book"
-          target/release/tengen-arena $openings \
+          odds=""
+          [ "${{ inputs.players }}" = tengen ] && [ -n "${{ inputs.tengen_turn_ms }}" ] && odds="--new-turn-ms ${{ inputs.tengen_turn_ms }}"
+          target/release/tengen-arena $openings $odds \
             --new "$new" \
             --base "$base" \
             --games $(( ${{ inputs.games }} / 4 )) \

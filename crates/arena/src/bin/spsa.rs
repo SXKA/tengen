@@ -115,6 +115,7 @@ fn main() {
         turn_ms: number("--turn-ms", 50),
         match_ms: 0,
         memory_mb: 160,
+        turn_override: None,
     };
     let text = std::fs::read_to_string(&spec).unwrap_or_else(|e| fail(format!("{spec}: {e}")));
     let params = parse_spec(&text, pairs).unwrap_or_else(|e| fail(e));

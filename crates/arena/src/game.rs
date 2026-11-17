@@ -19,6 +19,19 @@ pub struct Settings {
     pub match_ms: u64,
     /// Memory each brain may use, in MiB.
     pub memory_mb: u64,
+    /// Milliseconds per move for the brain with this command, instead of
+    /// `turn_ms`: time odds.
+    pub turn_override: Option<(String, u64)>,
+}
+
+impl Settings {
+    /// Milliseconds per move for the brain run by `path`.
+    pub fn turn_ms_for(&self, path: &str) -> u64 {
+        match &self.turn_override {
+            Some((command, ms)) if command == path => *ms,
+            _ => self.turn_ms,
+        }
+    }
 }
 
 /// Play one game. `black` moves first after the opening stones. Returns
@@ -40,7 +53,7 @@ pub fn play_game(
             path,
             options.size,
             options.rule,
-            options.turn_ms,
+            options.turn_ms_for(path),
             options.match_ms,
             options.memory_mb,
         )
@@ -76,7 +89,8 @@ pub fn play_game(
         let spent = started.elapsed().as_secs_f64() * 1000.0;
         time_left[side] -= spent;
         // Generous tolerance: CI machines are noisy.
-        let turn_limit = options.turn_ms as f64 * 2.0 + 500.0;
+        let turn_ms = options.turn_ms_for(if side == 0 { black_path } else { white_path });
+        let turn_limit = turn_ms as f64 * 2.0 + 500.0;
         let pos = match reply {
             Ok(_) if spent > turn_limit => {
                 let error = format!("{color:?} took {spent:.0} ms");
