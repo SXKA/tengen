@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tengen_arena::game::{Settings, play_game};
-use tengen_arena::openings::{Rng, opening};
+use tengen_arena::openings::{Rng, book_order, load_book, opening};
 use tengen_arena::record::{Outcome, write_game};
 use tengen_arena::sprt::{Pentanomial, Sprt};
 use tengen_engine::{Engine, Rule};
@@ -39,6 +39,8 @@ struct Options {
     seed: u64,
     /// Append finished games here, one per line, for tuning.
     record: Option<String>,
+    /// Play the openings of this book instead of random ones.
+    openings: Option<String>,
 }
 
 impl Options {
@@ -56,6 +58,7 @@ impl Options {
             sprt: None,
             seed: 1,
             record: None,
+            openings: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -76,6 +79,7 @@ impl Options {
                 "--memory-mb" => o.memory_mb = number(value()?)?,
                 "--seed" => o.seed = number(value()?)?,
                 "--record" => o.record = Some(value()?),
+                "--openings" => o.openings = Some(value()?),
                 "--sprt" => {
                     let v = value()?;
                     let (a, b) = v.split_once(',').ok_or("--sprt takes elo0,elo1")?;
@@ -95,7 +99,7 @@ impl Options {
 
 const USAGE: &str = "usage: tengen-arena --new BRAIN --base BRAIN [--games N] [--concurrency N]
        [--size 15] [--rule freestyle|standard|renju|caro|freestyle-caro] [--turn-ms 200] [--match-ms 0]
-       [--memory-mb 160] [--sprt ELO0,ELO1] [--seed 1] [--record FILE]";
+       [--memory-mb 160] [--sprt ELO0,ELO1] [--seed 1] [--record FILE] [--openings FILE]";
 
 /// Pairs to play before the SPRT may stop the match.
 const MIN_PAIRS: u64 = 50;
@@ -151,6 +155,15 @@ fn main() {
         memory_mb: options.memory_mb,
     };
 
+    let book = options.openings.as_deref().map(|path| {
+        let book = load_book(path).unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
+        let order = book_order(book.len(), options.seed);
+        (book, order)
+    });
+
     std::thread::scope(|scope| {
         for _ in 0..options.concurrency.min(pairs_total) {
             scope.spawn(|| {
@@ -163,7 +176,10 @@ fn main() {
                     // Each pair's opening depends only on the seed and its
                     // index, so a run is reproducible at any concurrency.
                     let mut rng = Rng(options.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ index as u64);
-                    let opening = &opening(options.size, options.rule, &mut rng, &mut engine);
+                    let opening = &match &book {
+                        Some((book, order)) => book[order[index % order.len()]].clone(),
+                        None => opening(options.size, options.rule, &mut rng, &mut engine),
+                    };
                     // The new engine plays Black in game 1 and White in game 2.
                     let (b1, w1) = (&options.new, &options.base);
                     let g1 = play_game(&settings, b1, w1, opening);

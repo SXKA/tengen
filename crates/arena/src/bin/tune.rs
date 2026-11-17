@@ -47,6 +47,8 @@ const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] [--rule freestyle]
                        --out FILE [--weights FILE]
   tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
+  tengen-tune openings --brain COMMAND [--count 400] [--ms 2000] [--max-eval 80] [--size 15]
+                       [--rule freestyle] [--seed 1] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
   tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
@@ -77,6 +79,21 @@ fn main() {
     };
     let out = flag("--out").unwrap_or_else(|| fail("--out is required"));
     match args.first().map(String::as_str) {
+        Some("openings") => {
+            let brain = flag("--brain").unwrap_or_else(|| fail("--brain is required"));
+            let threads = number("--threads", threads() as u64) as usize;
+            balanced_openings(BookSpec {
+                brain,
+                count: number("--count", 400) as usize,
+                ms: number("--ms", 2000),
+                max_eval: number("--max-eval", 80) as f64,
+                size: number("--size", 15) as usize,
+                rule,
+                seed: number("--seed", 1),
+                threads,
+                out,
+            });
+        }
         Some("selfplay") => {
             eval::install(&weights).unwrap_or_else(|e| fail(&e));
             let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as u64;
@@ -411,6 +428,92 @@ fn label(path: &str, command: &str, nodes: u64, threads: usize, out: &str) {
                 if let Some((_, _, mut brain)) = teacher {
                     brain.quit();
                 }
+            });
+        }
+    });
+}
+
+/// What `openings` makes.
+struct BookSpec {
+    brain: String,
+    count: usize,
+    ms: u64,
+    max_eval: f64,
+    size: usize,
+    rule: Rule,
+    seed: u64,
+    threads: usize,
+    out: String,
+}
+
+/// A book of `count` openings the teacher brain, thinking `ms` per
+/// position, values within `max_eval` of even. Candidates are the arena's
+/// random openings, which Tengen already judged roughly even; each is
+/// written with the teacher's value after a `;`.
+fn balanced_openings(spec: BookSpec) {
+    let file = std::fs::File::create(&spec.out).unwrap_or_else(|e| fail(&format!("{}: {e}", spec.out)));
+    let out = Mutex::new((BufWriter::new(file), std::collections::HashSet::<String>::new()));
+    let (tried, kept) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        for thread in 0..spec.threads {
+            let (spec, out, tried, kept) = (&spec, &out, &tried, &kept);
+            scope.spawn(move || {
+                let mut engine = Engine::new(16);
+                let mut rng = Rng(spec.seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ thread as u64);
+                let spawn = || {
+                    let mut brain = Brain::spawn(&spec.brain, spec.size, spec.rule, spec.ms, 0, 256)
+                        .unwrap_or_else(|e| fail(&format!("{}: {e}", spec.brain)));
+                    brain.send("INFO show_detail 1");
+                    brain
+                };
+                let mut brain = spawn();
+                while kept.load(Ordering::Relaxed) < spec.count {
+                    let moves = opening(spec.size, spec.rule, &mut rng, &mut engine);
+                    let text = moves
+                        .iter()
+                        .map(|p| format!("{},{}", p.x(), p.y()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if out.lock().unwrap().1.contains(&text) {
+                        continue;
+                    }
+                    let mut board = Board::with_rule(spec.size, spec.rule);
+                    for &pos in &moves {
+                        board.play(pos);
+                    }
+                    // As in `label`: give Rapfi a moment to finish its last search.
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    brain.take_messages();
+                    let value = match brain.board(&board, board.side_to_move()) {
+                        Ok(_) => reported_value(&brain.take_messages()),
+                        Err(e) => {
+                            eprintln!("{e}; restarting the teacher");
+                            brain = spawn();
+                            continue;
+                        }
+                    };
+                    tried.fetch_add(1, Ordering::Relaxed);
+                    let Some(value) = value.filter(|v| v.abs() <= spec.max_eval) else {
+                        continue;
+                    };
+                    let mut guard = out.lock().unwrap();
+                    if kept.load(Ordering::Relaxed) >= spec.count || !guard.1.insert(text.clone()) {
+                        continue;
+                    }
+                    let _ = writeln!(guard.0, "{text} ; {value:.0}");
+                    let _ = guard.0.flush();
+                    let n = kept.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_multiple_of(20) || n == spec.count {
+                        eprintln!(
+                            "{n}/{} openings kept of {} tried ({:.0}s)",
+                            spec.count,
+                            tried.load(Ordering::Relaxed),
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+                brain.quit();
             });
         }
     });

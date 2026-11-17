@@ -229,7 +229,11 @@ jobs:
           { echo '### Fit'; echo '```'; cat fit.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check against the current weights
         run: |
-          artifacts/tengen-arena \
+          # The balanced-openings book for the rule, when there is one.
+          book="crates/arena/openings/${{ inputs.rule }}-15.txt"
+          openings=""
+          [ -f "$book" ] && openings="--openings $book"
+          artifacts/tengen-arena $openings \
             --new "artifacts/pbrain-tengen --weights weights.txt" \
             --base artifacts/pbrain-tengen \
             --games 4000 --turn-ms 100 --sprt 0,10 --rule ${{ inputs.rule }} \
