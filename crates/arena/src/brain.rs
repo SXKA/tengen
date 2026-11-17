@@ -39,7 +39,14 @@ pub struct Brain {
 impl Brain {
     /// Start a brain and begin a game on a `size` board. `command` is the
     /// program followed by its arguments, separated by spaces.
-    pub fn spawn(command: &str, size: usize, rule: Rule, turn_ms: u64, match_ms: u64) -> Result<Brain, BrainError> {
+    pub fn spawn(
+        command: &str,
+        size: usize,
+        rule: Rule,
+        turn_ms: u64,
+        match_ms: u64,
+        memory_mb: u64,
+    ) -> Result<Brain, BrainError> {
         let mut words = command.split_whitespace();
         let program = words.next().unwrap_or_default();
         let mut child = Command::new(program)
@@ -69,7 +76,7 @@ impl Brain {
         };
         // One thread and a modest table so many games can run side by side.
         brain.send("INFO thread_num 1");
-        brain.send(&format!("INFO max_memory {}", 160u64 << 20));
+        brain.send(&format!("INFO max_memory {}", memory_mb << 20));
         brain.send(&format!("INFO timeout_turn {turn_ms}"));
         brain.send(&format!("INFO timeout_match {match_ms}"));
         brain.send(&format!("INFO rule {}", rule.piskvork()));
