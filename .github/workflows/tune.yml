@@ -42,6 +42,11 @@ on:
         description: Also refine every pattern code on its own
         type: boolean
         default: false
+      mode:
+        description: Fit every table, or only the threat table of the current weights
+        type: choice
+        options: [full, threat]
+        default: full
       relabel:
         description: With a teacher and an earlier run, label its games again instead of reusing its labels
         type: boolean
@@ -200,10 +205,18 @@ jobs:
           else
             cat artifacts/labelled-*.txt > games.txt
           fi
-          per_code=""
-          [ "${{ inputs.per_code }}" = true ] && per_code=--per-code
-          artifacts/tengen-tune fit --data games.txt --lambda ${{ inputs.lambda }} $per_code --out eval.txt 2>&1 | tee fit.log
-          artifacts/tengen-tune fit-policy --data games.txt --weights eval.txt --out weights.txt 2>&1 | tee -a fit.log
+          rule="${{ inputs.rule }}"
+          current=crates/engine/src/weights.txt
+          [ "$rule" = freestyle ] || current="crates/engine/src/weights-$rule.txt"
+          if [ "${{ inputs.mode }}" = threat ]; then
+            artifacts/tengen-tune fit-threat --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
+              --rule "$rule" --out weights.txt 2>&1 | tee fit.log
+          else
+            per_code=""
+            [ "${{ inputs.per_code }}" = true ] && per_code=--per-code
+            artifacts/tengen-tune fit --data games.txt --lambda ${{ inputs.lambda }} $per_code --out eval.txt 2>&1 | tee fit.log
+            artifacts/tengen-tune fit-policy --data games.txt --weights eval.txt --out weights.txt 2>&1 | tee -a fit.log
+          fi
           { echo '### Fit'; echo '```'; cat fit.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Check against the current weights
         run: |

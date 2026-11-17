@@ -48,6 +48,7 @@ const USAGE: &str = "usage:
                        --out FILE [--weights FILE]
   tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
+  tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
@@ -105,6 +106,12 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 300) as usize;
             let tuned = fit_policy(&data.split(',').collect::<Vec<_>>(), &weights, epochs);
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-threat") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let tuned = fit_threat(&data.split(',').collect::<Vec<_>>(), &weights, lambda);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("init") => {
@@ -630,6 +637,74 @@ fn optimize(
         }
     }
     p
+}
+
+/// Positions an entry of the threat table needs before `fit-threat` refits
+/// it; rarer entries keep their value.
+const THREAT_MIN_SAMPLES: usize = 200;
+
+/// Refit only the threat table of `weights`, entry by entry, keeping the
+/// pattern-code and move-ordering tables. With the pattern codes fixed,
+/// each entry is a one-dimensional fit over the positions that use it.
+fn fit_threat(paths: &[&str], weights: &Weights, lambda: f64) -> Weights {
+    let (mut train, mut valid) = load(paths);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    apply_teacher(&mut train, &mut valid, lambda);
+    let base = |s: &Sample| -> f64 {
+        let t = s.features.phase();
+        s.features
+            .pcode
+            .iter()
+            .map(|&(code, n)| {
+                let c = code as usize;
+                n as f64 * ((1.0 - t) * weights.pcode[c] as f64 + t * weights.pcode_late[c] as f64)
+            })
+            .sum()
+    };
+    let mut groups: Vec<Vec<(f64, f64)>> = vec![Vec::new(); THREAT_COUNT];
+    for s in &train {
+        groups[s.features.threat].push((base(s), s.result));
+    }
+    let loss = |threat: &[i32], samples: &[Sample]| -> f64 {
+        samples
+            .iter()
+            .map(|s| (s.result - sigmoid(base(s) + threat[s.features.threat] as f64)).powi(2))
+            .sum::<f64>()
+            / samples.len() as f64
+    };
+    let before = (loss(&weights.threat, &train), loss(&weights.threat, &valid));
+    let mut threat = weights.threat.clone();
+    let mut refit = 0;
+    for (entry, group) in groups.iter().enumerate() {
+        if group.len() < THREAT_MIN_SAMPLES {
+            continue;
+        }
+        let error = |x: f64| group.iter().map(|&(b, r)| (r - sigmoid(b + x)).powi(2)).sum::<f64>();
+        let x0 = weights.threat[entry] as f64;
+        let (mut lo, mut hi) = (x0 - 2000.0, x0 + 2000.0);
+        let g = (5f64.sqrt() - 1.0) / 2.0;
+        for _ in 0..50 {
+            let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+            if error(a) < error(b) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        threat[entry] = ((lo + hi) / 2.0).round() as i32;
+        refit += 1;
+    }
+    let after = (loss(&threat, &train), loss(&threat, &valid));
+    eprintln!(
+        "threat: {refit} of {THREAT_COUNT} entries refit; train {:.6} -> {:.6}, validation {:.6} -> {:.6}",
+        before.0, after.0, before.1, after.1
+    );
+    Weights {
+        threat,
+        ..weights.clone()
+    }
 }
 
 /// Turn the teacher's evaluations into win probabilities and mix them into
