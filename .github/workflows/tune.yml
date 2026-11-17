@@ -43,9 +43,9 @@ on:
         type: boolean
         default: false
       mode:
-        description: Fit every table, or only the threat or the move-ordering tables of the current weights
+        description: Fit every table, refine the current evaluation tables (local), or refit only the threat or move-ordering tables
         type: choice
-        options: [full, threat, policy]
+        options: [full, local, threat, policy]
         default: full
       relabel:
         description: With a teacher and an earlier run, label its games again instead of reusing its labels
@@ -210,7 +210,10 @@ jobs:
           [ "$rule" = freestyle ] || current="crates/engine/src/weights-$rule.txt"
           # Rules without their own file use the freestyle weights.
           [ -f "$current" ] || current=crates/engine/src/weights.txt
-          if [ "${{ inputs.mode }}" = policy ]; then
+          if [ "${{ inputs.mode }}" = local ]; then
+            artifacts/tengen-tune fit-local --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
+              --rule "$rule" --out weights.txt 2>&1 | tee fit.log
+          elif [ "${{ inputs.mode }}" = policy ]; then
             artifacts/tengen-tune fit-policy --data games.txt --weights "$current" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = threat ]; then
             artifacts/tengen-tune fit-threat --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
