@@ -4,7 +4,8 @@ name: Versus Rapfi
 # strongest open-source gomoku engine: once with its NNUE evaluation and once
 # with its classical evaluation only. Both play with the official weights
 # from https://github.com/dhbloo/rapfi-networks. Start it from the Actions
-# tab; every game is played (no early stop), so the Elo is unbiased.
+# tab; every game is played (no early stop), so the Elo is unbiased. With
+# players set to rapfi, Rapfi's NNUE plays its classical evaluation instead.
 on:
   workflow_dispatch:
     inputs:
@@ -19,6 +20,11 @@ on:
         type: choice
         options: [freestyle, standard, renju]
         default: freestyle
+      players:
+        description: Tengen against both Rapfis, or Rapfi NNUE against Rapfi classical
+        type: choice
+        options: [tengen, rapfi]
+        default: tengen
 
 permissions:
   contents: read
@@ -81,15 +87,24 @@ jobs:
           name: rapfi
           path: rapfi
       - name: Play
+        if: inputs.players == 'tengen' || matrix.evaluation == 'nnue'
         run: |
           chmod +x rapfi/*/pbrain-rapfi
+          new=target/release/pbrain-tengen
+          base=rapfi/${{ matrix.evaluation }}/pbrain-rapfi
+          title="Tengen against Rapfi (${{ matrix.evaluation }})"
+          if [ "${{ inputs.players }}" = rapfi ]; then
+            new=rapfi/nnue/pbrain-rapfi
+            base=rapfi/classical/pbrain-rapfi
+            title="Rapfi NNUE against Rapfi classical"
+          fi
           {
-            echo "### Tengen against Rapfi (${{ matrix.evaluation }})"
+            echo "### $title"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           target/release/tengen-arena \
-            --new target/release/pbrain-tengen \
-            --base rapfi/${{ matrix.evaluation }}/pbrain-rapfi \
+            --new "$new" \
+            --base "$base" \
             --games ${{ inputs.games }} \
             --turn-ms ${{ inputs.turn_ms }} \
             --rule ${{ inputs.rule }} \
