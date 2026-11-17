@@ -32,18 +32,51 @@ pub const SCALE: f64 = 200.0;
 pub const PHASE_PLIES: usize = 40;
 
 /// Number of threat-mask entries.
-pub const THREAT_COUNT: usize = 1 << 8;
+pub const THREAT_COUNT: usize = 1 << 13;
 
-/// Bits of the threat mask: four kinds of forcing move for each side.
+/// Threat-mask entries of weights files from before the thirteen-bit mask.
+const LEGACY_THREAT_COUNT: usize = 1 << 8;
+
+/// Bits of the threat mask: which kinds of forcing move each side has.
+/// Besides the four-three, fours that also make another four or two
+/// (`FOUR_PLUS`) are told apart from plain fours, and double threes and
+/// threes with more (`THREE_PLUS`) from single threes, as in Rapfi; the
+/// opponent's five is the side to move's forced block.
 mod bit {
     pub const SELF_FLEX4: usize = 1 << 0;
     pub const SELF_FOUR_THREE: usize = 1 << 1;
-    pub const SELF_FOUR: usize = 1 << 2;
-    pub const SELF_FLEX3: usize = 1 << 3;
-    pub const OPP_FLEX4: usize = 1 << 4;
-    pub const OPP_FOUR_THREE: usize = 1 << 5;
-    pub const OPP_FOUR: usize = 1 << 6;
-    pub const OPP_FLEX3: usize = 1 << 7;
+    pub const SELF_FOUR_PLUS: usize = 1 << 2;
+    pub const SELF_FOUR: usize = 1 << 3;
+    pub const SELF_THREE_PLUS: usize = 1 << 4;
+    pub const SELF_THREE: usize = 1 << 5;
+    pub const OPP_FLEX4: usize = 1 << 6;
+    pub const OPP_FOUR_THREE: usize = 1 << 7;
+    pub const OPP_FOUR_PLUS: usize = 1 << 8;
+    pub const OPP_FOUR: usize = 1 << 9;
+    pub const OPP_THREE_PLUS: usize = 1 << 10;
+    pub const OPP_THREE: usize = 1 << 11;
+    pub const OPP_FIVE: usize = 1 << 12;
+    /// Shift from a side-to-move bit to the same opponent bit.
+    pub const OPP_SHIFT: usize = 6;
+}
+
+/// Entry of an eight-bit (legacy) threat table that `mask` refines: flex
+/// four, four-three, any other four and any three for each side.
+fn legacy_threat_index(mask: usize) -> usize {
+    let side = |m: usize| {
+        (m & bit::SELF_FLEX4 != 0) as usize
+            | ((m & bit::SELF_FOUR_THREE != 0) as usize) << 1
+            | ((m & (bit::SELF_FOUR_PLUS | bit::SELF_FOUR) != 0) as usize) << 2
+            | ((m & (bit::SELF_THREE_PLUS | bit::SELF_THREE) != 0) as usize) << 3
+    };
+    side(mask) | side(mask >> bit::OPP_SHIFT) << 4
+}
+
+/// Expand an eight-bit (legacy) threat table to the eleven-bit mask.
+pub fn expand_legacy_threats(legacy: &[i32]) -> Vec<i32> {
+    (0..THREAT_COUNT)
+        .map(|mask| legacy[legacy_threat_index(mask)])
+        .collect()
 }
 
 /// The evaluation tables.
@@ -113,8 +146,9 @@ const fn default_threats() -> [i32; THREAT_COUNT] {
     let mut out = [0; THREAT_COUNT];
     let mut mask = 0;
     while mask < THREAT_COUNT {
-        let opp_forcing = mask & (bit::OPP_FLEX4 | bit::OPP_FOUR_THREE | bit::OPP_FOUR) != 0;
-        let self_forcing = mask & (bit::SELF_FLEX4 | bit::SELF_FOUR_THREE | bit::SELF_FOUR) != 0;
+        let fours = bit::SELF_FLEX4 | bit::SELF_FOUR_THREE | bit::SELF_FOUR_PLUS | bit::SELF_FOUR;
+        let opp_forcing = mask & (fours << bit::OPP_SHIFT | bit::OPP_FIVE) != 0;
+        let self_forcing = mask & fours != 0;
         // Having the move is worth about half a stone's potential.
         let mut v = TEMPO;
         if mask & bit::SELF_FLEX4 != 0 {
@@ -123,10 +157,10 @@ const fn default_threats() -> [i32; THREAT_COUNT] {
         if mask & bit::SELF_FOUR_THREE != 0 {
             v += if opp_forcing { 100 } else { 400 };
         }
-        if mask & bit::SELF_FOUR != 0 {
+        if mask & (bit::SELF_FOUR_PLUS | bit::SELF_FOUR) != 0 {
             v += 60;
         }
-        if mask & bit::SELF_FLEX3 != 0 {
+        if mask & (bit::SELF_THREE_PLUS | bit::SELF_THREE) != 0 {
             v += if opp_forcing { 40 } else { 150 };
         }
         if mask & bit::OPP_FLEX4 != 0 {
@@ -135,10 +169,10 @@ const fn default_threats() -> [i32; THREAT_COUNT] {
         if mask & bit::OPP_FOUR_THREE != 0 {
             v -= 150;
         }
-        if mask & bit::OPP_FOUR != 0 {
+        if mask & (bit::OPP_FOUR_PLUS | bit::OPP_FOUR) != 0 {
             v -= 30;
         }
-        if mask & bit::OPP_FLEX3 != 0 {
+        if mask & (bit::OPP_THREE_PLUS | bit::OPP_THREE) != 0 {
             v -= 50;
         }
         out[mask] = v;
@@ -202,6 +236,11 @@ impl Weights {
             let values: Vec<i32> = words
                 .map(|v| v.parse().map_err(|e| format!("{name}: {e}")))
                 .collect::<Result<_, _>>()?;
+            let values = if name == "threat" && values.len() == LEGACY_THREAT_COUNT {
+                expand_legacy_threats(&values)
+            } else {
+                values
+            };
             let (slot, len) = match name {
                 "pcode" => (&mut pcode, PCODE_COUNT),
                 "pcode_late" => (&mut pcode_late, PCODE_COUNT),
@@ -317,21 +356,24 @@ impl CellValues {
 
 /// Which kinds of forcing moves each side has, for the threat term.
 pub fn threat_mask(board: &Board, us: Color) -> usize {
+    use Pattern4::*;
+    let side = |c: Color| {
+        let any = |kinds: &[Pattern4]| kinds.iter().any(|&k| board.p4_count(c, k) > 0);
+        let flag = |on: bool, b: usize| if on { b } else { 0 };
+        flag(any(&[BFlex4]), bit::SELF_FLEX4)
+            | flag(any(&[CBlock4Flex3]), bit::SELF_FOUR_THREE)
+            | flag(any(&[DBlock4Plus]), bit::SELF_FOUR_PLUS)
+            | flag(any(&[EBlock4]), bit::SELF_FOUR)
+            | flag(any(&[FFlex3x2, GFlex3Plus]), bit::SELF_THREE_PLUS)
+            | flag(any(&[HFlex3]), bit::SELF_THREE)
+    };
     let them = us.opponent();
-    let any = |c, kinds: &[Pattern4]| kinds.iter().any(|&k| board.p4_count(c, k) > 0);
-    let mut mask = 0;
-    for (color, shift) in [(us, 0), (them, 4)] {
-        let flags = [
-            any(color, &[Pattern4::BFlex4]),
-            any(color, &[Pattern4::CBlock4Flex3]),
-            any(color, &[Pattern4::DBlock4Plus, Pattern4::EBlock4]),
-            any(color, &[Pattern4::FFlex3x2, Pattern4::GFlex3Plus, Pattern4::HFlex3]),
-        ];
-        for (i, flag) in flags.into_iter().enumerate() {
-            mask |= (flag as usize) << (i + shift);
-        }
-    }
-    mask
+    let five = if board.p4_count(them, AFive) > 0 {
+        bit::OPP_FIVE
+    } else {
+        0
+    };
+    side(us) | side(them) << bit::OPP_SHIFT | five
 }
 
 /// Static evaluation from the side to move's point of view.
@@ -457,6 +499,19 @@ mod tests {
             .map(|l| format!("{l}\n"))
             .collect();
         assert_eq!(Weights::parse(&text).unwrap(), weights);
+    }
+
+    #[test]
+    fn legacy_threats_expand_to_the_entries_they_cover() {
+        let legacy: Vec<i32> = (0..LEGACY_THREAT_COUNT as i32).collect();
+        let expanded = expand_legacy_threats(&legacy);
+        assert_eq!(expanded[0], 0);
+        assert_eq!(expanded[bit::SELF_FOUR_THREE], 0b10);
+        assert_eq!(expanded[bit::SELF_FOUR_PLUS], 0b100);
+        assert_eq!(expanded[bit::SELF_FOUR | bit::SELF_FOUR_PLUS], 0b100);
+        assert_eq!(expanded[bit::SELF_THREE_PLUS], 0b1000);
+        assert_eq!(expanded[bit::OPP_FLEX4 | bit::OPP_THREE], 0b1001_0000);
+        assert_eq!(expanded[bit::OPP_FIVE], 0);
     }
 
     #[test]

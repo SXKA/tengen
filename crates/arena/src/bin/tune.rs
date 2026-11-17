@@ -41,13 +41,14 @@ use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THR
 use tengen_engine::movegen;
 use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 use tengen_engine::search::MATE_BOUND;
-use tengen_engine::{Board, Color, Engine, Limits, Rule};
+use tengen_engine::{Board, Color, Engine, Limits, Pos, Rule};
 
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] [--rule freestyle]
                        --out FILE [--weights FILE]
   tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
+  tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
@@ -105,6 +106,12 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 300) as usize;
             let tuned = fit_policy(&data.split(',').collect::<Vec<_>>(), &weights, epochs);
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-threat") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let tuned = fit_threat(&data.split(',').collect::<Vec<_>>(), &weights, lambda);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("init") => {
@@ -230,6 +237,35 @@ fn is_quiet(board: &Board) -> bool {
 /// Node budget of the shallow search that filters out tactical positions.
 const FILTER_NODES: u64 = 20_000;
 
+/// A teacher's verdict on the position after a move, from `label`.
+struct Label {
+    /// Its evaluation for the side to move; `None` for a mate.
+    value: Option<f64>,
+    /// The move it would play, in files labelled since moves were recorded.
+    best: Option<Pos>,
+}
+
+/// The labels after a game's `;`, by move number from 0, or `None` for an
+/// unlabelled game. A label is `PLY:VALUE` or `PLY:VALUE:X,Y`, with `m`
+/// for the value of a mate.
+fn parse_labels(line: &str) -> Option<std::collections::HashMap<usize, Label>> {
+    let (_, rest) = line.split_once(';')?;
+    Some(
+        rest.split_whitespace()
+            .filter_map(|w| {
+                let mut parts = w.split(':');
+                let ply = parts.next()?.parse().ok()?;
+                let value = parts.next()?.parse().ok();
+                let best = parts.next().and_then(|m| {
+                    let (x, y) = m.split_once(',')?;
+                    Some(Pos::new(x.parse().ok()?, y.parse().ok()?))
+                });
+                Some((ply, Label { value, best }))
+            })
+            .collect(),
+    )
+}
+
 /// Why a position is not trained on.
 enum Skip {
     /// Near the start or end of the game, or not quiet.
@@ -323,11 +359,11 @@ fn label(path: &str, command: &str, nodes: u64, threads: usize, out: &str) {
                             let brain = &mut teacher.as_mut().expect("teacher").2;
                             brain.take_messages();
                             match brain.board(&board, board.side_to_move()) {
-                                Ok(_) => {
-                                    if let Some(v) = reported_value(&brain.take_messages()) {
-                                        text.push_str(&format!(" {ply}:{v:.0}"));
-                                        labelled.fetch_add(1, Ordering::Relaxed);
-                                    }
+                                Ok(mv) => {
+                                    let value = reported_value(&brain.take_messages())
+                                        .map_or_else(|| "m".to_string(), |v| format!("{v:.0}"));
+                                    text.push_str(&format!(" {ply}:{value}:{},{}", mv.x(), mv.y()));
+                                    labelled.fetch_add(1, Ordering::Relaxed);
                                     break;
                                 }
                                 Err(e) => {
@@ -446,12 +482,10 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
         };
         let (outcome, moves) = (game.outcome, &game.moves);
         // Labelled games train only on the positions the teacher evaluated.
-        let labels: Option<std::collections::HashMap<usize, f64>> = line.split_once(';').map(|(_, rest)| {
-            rest.split_whitespace()
-                .filter_map(|w| {
-                    let (ply, v) = w.split_once(':')?;
-                    Some((ply.parse().ok()?, v.parse().ok()?))
-                })
+        let labels: Option<std::collections::HashMap<usize, f64>> = parse_labels(line).map(|labels| {
+            labels
+                .into_iter()
+                .filter_map(|(ply, label)| Some((ply, label.value?)))
                 .collect()
         });
         let mut board = game.board();
@@ -632,6 +666,74 @@ fn optimize(
     p
 }
 
+/// Positions an entry of the threat table needs before `fit-threat` refits
+/// it; rarer entries keep their value.
+const THREAT_MIN_SAMPLES: usize = 200;
+
+/// Refit only the threat table of `weights`, entry by entry, keeping the
+/// pattern-code and move-ordering tables. With the pattern codes fixed,
+/// each entry is a one-dimensional fit over the positions that use it.
+fn fit_threat(paths: &[&str], weights: &Weights, lambda: f64) -> Weights {
+    let (mut train, mut valid) = load(paths);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    apply_teacher(&mut train, &mut valid, lambda);
+    let base = |s: &Sample| -> f64 {
+        let t = s.features.phase();
+        s.features
+            .pcode
+            .iter()
+            .map(|&(code, n)| {
+                let c = code as usize;
+                n as f64 * ((1.0 - t) * weights.pcode[c] as f64 + t * weights.pcode_late[c] as f64)
+            })
+            .sum()
+    };
+    let mut groups: Vec<Vec<(f64, f64)>> = vec![Vec::new(); THREAT_COUNT];
+    for s in &train {
+        groups[s.features.threat].push((base(s), s.result));
+    }
+    let loss = |threat: &[i32], samples: &[Sample]| -> f64 {
+        samples
+            .iter()
+            .map(|s| (s.result - sigmoid(base(s) + threat[s.features.threat] as f64)).powi(2))
+            .sum::<f64>()
+            / samples.len() as f64
+    };
+    let before = (loss(&weights.threat, &train), loss(&weights.threat, &valid));
+    let mut threat = weights.threat.clone();
+    let mut refit = 0;
+    for (entry, group) in groups.iter().enumerate() {
+        if group.len() < THREAT_MIN_SAMPLES {
+            continue;
+        }
+        let error = |x: f64| group.iter().map(|&(b, r)| (r - sigmoid(b + x)).powi(2)).sum::<f64>();
+        let x0 = weights.threat[entry] as f64;
+        let (mut lo, mut hi) = (x0 - 2000.0, x0 + 2000.0);
+        let g = (5f64.sqrt() - 1.0) / 2.0;
+        for _ in 0..50 {
+            let (a, b) = (hi - g * (hi - lo), lo + g * (hi - lo));
+            if error(a) < error(b) {
+                hi = b;
+            } else {
+                lo = a;
+            }
+        }
+        threat[entry] = ((lo + hi) / 2.0).round() as i32;
+        refit += 1;
+    }
+    let after = (loss(&threat, &train), loss(&threat, &valid));
+    eprintln!(
+        "threat: {refit} of {THREAT_COUNT} entries refit; train {:.6} -> {:.6}, validation {:.6} -> {:.6}",
+        before.0, after.0, before.1, after.1
+    );
+    Weights {
+        threat,
+        ..weights.clone()
+    }
+}
+
 /// Turn the teacher's evaluations into win probabilities and mix them into
 /// the targets: `lambda * teacher + (1 - lambda) * result`. The scale is
 /// the one with which the teacher best predicts the training games' results.
@@ -783,12 +885,22 @@ fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
         let Some(game) = parse_game(line) else {
             return (index, samples);
         };
+        // With teacher moves, learn those instead of the moves played.
+        let teacher: Option<std::collections::HashMap<usize, Pos>> = parse_labels(line)
+            .map(|labels| labels.into_iter().filter_map(|(ply, l)| Some((ply, l.best?))).collect())
+            .filter(|moves: &std::collections::HashMap<usize, Pos>| !moves.is_empty());
         let mut board = game.board();
         let mut list = Vec::new();
-        for &played in &game.moves {
+        for (index, &played) in game.moves.iter().enumerate() {
+            // The position after move `index - 1`.
+            let wanted = match &teacher {
+                Some(moves) => index.checked_sub(1).and_then(|ply| moves.get(&ply).copied()),
+                None => Some(played),
+            };
             if board.ply() >= 2
+                && let Some(wanted) = wanted
                 && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
-                && let Some(target) = list.iter().position(|m| m.pos == played)
+                && let Some(target) = list.iter().position(|m| m.pos == wanted)
             {
                 let us = board.side_to_move();
                 let candidates = list
