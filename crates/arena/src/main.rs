@@ -32,6 +32,8 @@ struct Options {
     rule: Rule,
     turn_ms: u64,
     match_ms: u64,
+    /// Memory each brain may use, in MiB (Piskvork's max_memory).
+    memory_mb: u64,
     /// SPRT bounds in logistic Elo; `None` plays a fixed number of games.
     sprt: Option<(f64, f64)>,
     seed: u64,
@@ -50,6 +52,7 @@ impl Options {
             rule: Rule::Freestyle,
             turn_ms: 200,
             match_ms: 0,
+            memory_mb: 160,
             sprt: None,
             seed: 1,
             record: None,
@@ -70,6 +73,7 @@ impl Options {
                 }
                 "--turn-ms" => o.turn_ms = number(value()?)?,
                 "--match-ms" => o.match_ms = number(value()?)?,
+                "--memory-mb" => o.memory_mb = number(value()?)?,
                 "--seed" => o.seed = number(value()?)?,
                 "--record" => o.record = Some(value()?),
                 "--sprt" => {
@@ -90,7 +94,8 @@ impl Options {
 }
 
 const USAGE: &str = "usage: tengen-arena --new BRAIN --base BRAIN [--games N] [--concurrency N]
-       [--size 15] [--rule freestyle|standard|renju|caro|freestyle-caro] [--turn-ms 200] [--match-ms 0] [--sprt ELO0,ELO1] [--seed 1] [--record FILE]";
+       [--size 15] [--rule freestyle|standard|renju|caro|freestyle-caro] [--turn-ms 200] [--match-ms 0]
+       [--memory-mb 160] [--sprt ELO0,ELO1] [--seed 1] [--record FILE]";
 
 /// Pairs to play before the SPRT may stop the match.
 const MIN_PAIRS: u64 = 50;
@@ -143,6 +148,7 @@ fn main() {
         rule: options.rule,
         turn_ms: options.turn_ms,
         match_ms: options.match_ms,
+        memory_mb: options.memory_mb,
     };
 
     std::thread::scope(|scope| {

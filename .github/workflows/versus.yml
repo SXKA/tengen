@@ -18,6 +18,14 @@ on:
       match_ms:
         description: Milliseconds per side for the whole game (0 for none), as in Gomocup
         default: "0"
+      memory_mb:
+        description: Memory per engine in MiB (Gomocup 2026 allows 1024)
+        default: "160"
+      size:
+        description: Board size
+        type: choice
+        options: ["15", "20"]
+        default: "15"
       rule:
         description: Game rule (Rapfi plays freestyle, standard and renju)
         type: choice
@@ -113,6 +121,8 @@ jobs:
             --games $(( ${{ inputs.games }} / 4 )) \
             --turn-ms ${{ inputs.turn_ms }} \
             --match-ms ${{ inputs.match_ms }} \
+            --memory-mb ${{ inputs.memory_mb }} \
+            --size ${{ inputs.size }} \
             --rule ${{ inputs.rule }} \
             --concurrency "$(nproc)" \
             --record games.txt \

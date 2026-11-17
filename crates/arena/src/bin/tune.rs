@@ -342,8 +342,8 @@ fn label(path: &str, command: &str, nodes: u64, threads: usize, out: &str) {
     let (done, labelled) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let started = Instant::now();
     let spawn = |game: &tengen_arena::record::Game| {
-        let mut brain =
-            Brain::spawn(command, game.size, game.rule, 60_000, 0).unwrap_or_else(|e| fail(&format!("{command}: {e}")));
+        let mut brain = Brain::spawn(command, game.size, game.rule, 60_000, 0, 160)
+            .unwrap_or_else(|e| fail(&format!("{command}: {e}")));
         brain.send(&format!("INFO max_node {nodes}"));
         brain.send("INFO show_detail 1");
         brain

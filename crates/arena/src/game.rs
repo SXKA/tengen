@@ -17,6 +17,8 @@ pub struct Settings {
     pub turn_ms: u64,
     /// Milliseconds per game and player; 0 for no game clock.
     pub match_ms: u64,
+    /// Memory each brain may use, in MiB.
+    pub memory_mb: u64,
 }
 
 /// Play one game. `black` moves first after the opening stones. Returns
@@ -33,7 +35,16 @@ pub fn play_game(
         board.play(pos);
     }
     // Brains in color order; who moves next is decided by the board.
-    let spawn = |path: &str| Brain::spawn(path, options.size, options.rule, options.turn_ms, options.match_ms);
+    let spawn = |path: &str| {
+        Brain::spawn(
+            path,
+            options.size,
+            options.rule,
+            options.turn_ms,
+            options.match_ms,
+            options.memory_mb,
+        )
+    };
     let mut brains = match (spawn(black_path), spawn(white_path)) {
         (Ok(b), Ok(w)) => [b, w],
         (Err(e), _) | (_, Err(e)) => return (Outcome::Draw, board.moves().collect(), Some(format!("spawn: {e}"))),
