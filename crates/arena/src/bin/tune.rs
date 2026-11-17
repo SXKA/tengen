@@ -41,7 +41,7 @@ use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THR
 use tengen_engine::movegen;
 use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 use tengen_engine::search::MATE_BOUND;
-use tengen_engine::{Board, Color, Engine, Limits, Rule};
+use tengen_engine::{Board, Color, Engine, Limits, Pos, Rule};
 
 const USAGE: &str = "usage:
   tengen-tune selfplay --games N [--nodes 30000] [--threads N] [--seed 1] [--size 15] [--rule freestyle]
@@ -237,6 +237,35 @@ fn is_quiet(board: &Board) -> bool {
 /// Node budget of the shallow search that filters out tactical positions.
 const FILTER_NODES: u64 = 20_000;
 
+/// A teacher's verdict on the position after a move, from `label`.
+struct Label {
+    /// Its evaluation for the side to move; `None` for a mate.
+    value: Option<f64>,
+    /// The move it would play, in files labelled since moves were recorded.
+    best: Option<Pos>,
+}
+
+/// The labels after a game's `;`, by move number from 0, or `None` for an
+/// unlabelled game. A label is `PLY:VALUE` or `PLY:VALUE:X,Y`, with `m`
+/// for the value of a mate.
+fn parse_labels(line: &str) -> Option<std::collections::HashMap<usize, Label>> {
+    let (_, rest) = line.split_once(';')?;
+    Some(
+        rest.split_whitespace()
+            .filter_map(|w| {
+                let mut parts = w.split(':');
+                let ply = parts.next()?.parse().ok()?;
+                let value = parts.next()?.parse().ok();
+                let best = parts.next().and_then(|m| {
+                    let (x, y) = m.split_once(',')?;
+                    Some(Pos::new(x.parse().ok()?, y.parse().ok()?))
+                });
+                Some((ply, Label { value, best }))
+            })
+            .collect(),
+    )
+}
+
 /// Why a position is not trained on.
 enum Skip {
     /// Near the start or end of the game, or not quiet.
@@ -330,11 +359,11 @@ fn label(path: &str, command: &str, nodes: u64, threads: usize, out: &str) {
                             let brain = &mut teacher.as_mut().expect("teacher").2;
                             brain.take_messages();
                             match brain.board(&board, board.side_to_move()) {
-                                Ok(_) => {
-                                    if let Some(v) = reported_value(&brain.take_messages()) {
-                                        text.push_str(&format!(" {ply}:{v:.0}"));
-                                        labelled.fetch_add(1, Ordering::Relaxed);
-                                    }
+                                Ok(mv) => {
+                                    let value = reported_value(&brain.take_messages())
+                                        .map_or_else(|| "m".to_string(), |v| format!("{v:.0}"));
+                                    text.push_str(&format!(" {ply}:{value}:{},{}", mv.x(), mv.y()));
+                                    labelled.fetch_add(1, Ordering::Relaxed);
                                     break;
                                 }
                                 Err(e) => {
@@ -453,12 +482,10 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
         };
         let (outcome, moves) = (game.outcome, &game.moves);
         // Labelled games train only on the positions the teacher evaluated.
-        let labels: Option<std::collections::HashMap<usize, f64>> = line.split_once(';').map(|(_, rest)| {
-            rest.split_whitespace()
-                .filter_map(|w| {
-                    let (ply, v) = w.split_once(':')?;
-                    Some((ply.parse().ok()?, v.parse().ok()?))
-                })
+        let labels: Option<std::collections::HashMap<usize, f64>> = parse_labels(line).map(|labels| {
+            labels
+                .into_iter()
+                .filter_map(|(ply, label)| Some((ply, label.value?)))
                 .collect()
         });
         let mut board = game.board();
@@ -858,12 +885,22 @@ fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
         let Some(game) = parse_game(line) else {
             return (index, samples);
         };
+        // With teacher moves, learn those instead of the moves played.
+        let teacher: Option<std::collections::HashMap<usize, Pos>> = parse_labels(line)
+            .map(|labels| labels.into_iter().filter_map(|(ply, l)| Some((ply, l.best?))).collect())
+            .filter(|moves: &std::collections::HashMap<usize, Pos>| !moves.is_empty());
         let mut board = game.board();
         let mut list = Vec::new();
-        for &played in &game.moves {
+        for (index, &played) in game.moves.iter().enumerate() {
+            // The position after move `index - 1`.
+            let wanted = match &teacher {
+                Some(moves) => index.checked_sub(1).and_then(|ply| moves.get(&ply).copied()),
+                None => Some(played),
+            };
             if board.ply() >= 2
+                && let Some(wanted) = wanted
                 && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
-                && let Some(target) = list.iter().position(|m| m.pos == played)
+                && let Some(target) = list.iter().position(|m| m.pos == wanted)
             {
                 let us = board.side_to_move();
                 let candidates = list
