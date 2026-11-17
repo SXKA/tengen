@@ -49,7 +49,8 @@ const USAGE: &str = "usage:
   tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
-  tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1] --out FILE
+  tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
+                        [--l2 1e-6,1e-7,1e-8] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
@@ -113,7 +114,18 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
             let epochs = number("--epochs", 400) as usize;
-            let tuned = fit_local(&data.split(',').collect::<Vec<_>>(), &weights, epochs, lambda);
+            let strengths: Vec<f64> = flag("--l2")
+                .unwrap_or_else(|| "1e-6,1e-7,1e-8".to_string())
+                .split(',')
+                .map(|v| v.parse().unwrap_or_else(|_| fail("bad --l2")))
+                .collect();
+            let tuned = fit_local(
+                &data.split(',').collect::<Vec<_>>(),
+                &weights,
+                epochs,
+                lambda,
+                &strengths,
+            );
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-threat") => {
@@ -675,11 +687,11 @@ fn optimize(
 }
 
 /// Refine the pattern-code and threat tables of `weights` from their current
-/// values, pulled toward them by an L2 term, instead of refitting from the
-/// factored defaults; the move-ordering tables are kept. Each strength is
-/// tried and the one with the best validation loss kept, or the current
+/// values, pulled toward them by an L2 term of each of `strengths`, instead
+/// of refitting from the factored defaults; the move-ordering tables are
+/// kept. The strength with the best validation loss is kept, or the current
 /// weights if none improves on them.
-fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> Weights {
+fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, strengths: &[f64]) -> Weights {
     let (mut train, mut valid) = load(paths);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
@@ -701,7 +713,7 @@ fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> W
         "current: train {:.6}, validation {best_loss:.6}",
         loss(&codes, &train, &current)
     );
-    for &l2 in &[1e-6, 1e-7, 1e-8] {
+    for &l2 in strengths {
         let p = optimize(&codes, &train, &current, &current, l2, epochs);
         let rounded: Vec<i32> = p.iter().map(|&v| v.round() as i32).collect();
         let candidate = Weights {
