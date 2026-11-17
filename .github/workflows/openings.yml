@@ -77,11 +77,20 @@ jobs:
           } > "$book"
           rm "$book.new"
           wc -l "$book"
+          # In the log as well, in case the push fails.
+          cat "$book"
       - name: Push the book
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "openings/${{ github.run_id }}"
+          # Commit on top of the current master: a branch from an older
+          # commit whose workflows differ from master's is refused.
+          book="crates/arena/openings/${{ inputs.rule }}-${{ inputs.size }}.txt"
+          cp "$book" /tmp/book.txt
+          git fetch origin master
+          git switch -c "openings/${{ github.run_id }}" origin/master
+          mkdir -p crates/arena/openings
+          cp /tmp/book.txt "$book"
           git add crates/arena/openings
           git commit -m "Balanced ${{ inputs.rule }} openings on ${{ inputs.size }}x${{ inputs.size }} from run ${{ github.run_id }}"
           git push origin "openings/${{ github.run_id }}"
