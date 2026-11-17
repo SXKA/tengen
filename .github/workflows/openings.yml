@@ -1,0 +1,87 @@
+name: Openings
+
+# Make a book of balanced openings for the arena: random openings near the
+# center that Rapfi (NNUE, https://github.com/dhbloo/rapfi) values close to
+# even after thinking a while. The book is pushed to the branch
+# openings/<run id> as crates/arena/openings/RULE-SIZE.txt, for a pull
+# request; matches then play its openings instead of random ones.
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: Openings to keep
+        default: "400"
+      ms:
+        description: Milliseconds Rapfi thinks about each candidate
+        default: "2000"
+      max_eval:
+        description: Largest Rapfi evaluation kept (either side)
+        default: "80"
+      rule:
+        description: Game rule (Rapfi plays freestyle, standard and renju)
+        type: choice
+        options: [freestyle, standard, renju]
+        default: freestyle
+      size:
+        description: Board size
+        type: choice
+        options: ["15", "20"]
+        default: "15"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi
+          path: rapfi-src
+      - uses: actions/checkout@v7
+        with:
+          repository: dhbloo/rapfi-networks
+          path: networks
+      - name: Build Rapfi
+        run: |
+          cmake -S rapfi-src/Rapfi -B rapfi-build -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SSE=ON -DUSE_AVX2=ON -DUSE_AVX512=OFF -DUSE_BMI2=OFF -DUSE_VNNI=OFF -DNO_COMMAND_MODULES=ON
+          cmake --build rapfi-build -j "$(nproc)"
+          mkdir -p rapfi
+          cp rapfi-build/pbrain-rapfi rapfi/
+          cp networks/config-example/config.toml networks/classical/*.bin networks/mix9svq/* rapfi/
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: cargo build --release -p tengen-arena
+      - name: Make the book
+        run: |
+          book="crates/arena/openings/${{ inputs.rule }}-${{ inputs.size }}.txt"
+          mkdir -p crates/arena/openings
+          target/release/tengen-tune openings --brain rapfi/pbrain-rapfi \
+            --count ${{ inputs.count }} --ms ${{ inputs.ms }} --max-eval ${{ inputs.max_eval }} \
+            --size ${{ inputs.size }} --rule ${{ inputs.rule }} --seed "${{ github.run_id }}" \
+            --out "$book.new" 2>&1 | tail -n 30
+          {
+            echo "# Balanced ${{ inputs.rule }} openings on ${{ inputs.size }}x${{ inputs.size }}: Rapfi (NNUE)"
+            echo "# values each within ${{ inputs.max_eval }} of even after ${{ inputs.ms }} ms (value after the ;)."
+            echo "# Made by the Openings workflow, run ${{ github.run_id }}."
+            sort "$book.new"
+          } > "$book"
+          rm "$book.new"
+          wc -l "$book"
+      - name: Push the book
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "openings/${{ github.run_id }}"
+          git add crates/arena/openings
+          git commit -m "Balanced ${{ inputs.rule }} openings on ${{ inputs.size }}x${{ inputs.size }} from run ${{ github.run_id }}"
+          git push origin "openings/${{ github.run_id }}"

@@ -115,7 +115,11 @@ jobs:
             echo "### $title (part ${{ matrix.shard }} of 4)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          target/release/tengen-arena \
+          # The balanced-openings book for the rule and size, when there is one.
+          book="crates/arena/openings/${{ inputs.rule }}-${{ inputs.size }}.txt"
+          openings=""
+          [ -f "$book" ] && openings="--openings $book"
+          target/release/tengen-arena $openings \
             --new "$new" \
             --base "$base" \
             --games $(( ${{ inputs.games }} / 4 )) \

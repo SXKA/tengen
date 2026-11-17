@@ -1,4 +1,5 @@
-//! Balanced random openings.
+//! Balanced openings: random ones a short search judges even, or a book
+//! of openings a stronger engine judged even (`tengen-tune openings`).
 
 use tengen_engine::pattern::Pattern4;
 use tengen_engine::{Board, Engine, Limits, Pos, Rule};
@@ -47,4 +48,41 @@ pub fn opening(size: usize, rule: Rule, rng: &mut Rng, engine: &mut Engine) -> V
             return moves;
         }
     }
+}
+
+/// Openings from a book file: one per line, moves as `X,Y` separated by
+/// spaces; anything after a `;`, blank lines and `#` comments are ignored.
+pub fn load_book(path: &str) -> Result<Vec<Vec<Pos>>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut book = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.split(';').next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let moves = line
+            .split_whitespace()
+            .map(|word| {
+                let (x, y) = word.split_once(',')?;
+                Some(Pos::new(x.parse().ok()?, y.parse().ok()?))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(format!("{path}:{}: bad move list", number + 1))?;
+        book.push(moves);
+    }
+    if book.is_empty() {
+        return Err(format!("{path}: no openings"));
+    }
+    Ok(book)
+}
+
+/// The order a run plays a book's openings in: shuffled by `seed`, then
+/// repeated if there are more pairs than openings.
+pub fn book_order(len: usize, seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut rng = Rng(seed ^ 0x6f70_656e_696e_6773);
+    for i in (1..len).rev() {
+        order.swap(i, rng.below(i + 1));
+    }
+    order
 }
