@@ -49,6 +49,7 @@ const USAGE: &str = "usage:
   tengen-tune label --data FILE --brain COMMAND [--nodes 20000] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
+  tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
 
@@ -106,6 +107,13 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 300) as usize;
             let tuned = fit_policy(&data.split(',').collect::<Vec<_>>(), &weights, epochs);
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-local") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let epochs = number("--epochs", 400) as usize;
+            let tuned = fit_local(&data.split(',').collect::<Vec<_>>(), &weights, epochs, lambda);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-threat") => {
@@ -664,6 +672,56 @@ fn optimize(
         }
     }
     p
+}
+
+/// Refine the pattern-code and threat tables of `weights` from their current
+/// values, pulled toward them by an L2 term, instead of refitting from the
+/// factored defaults; the move-ordering tables are kept. Each strength is
+/// tried and the one with the best validation loss kept, or the current
+/// weights if none improves on them.
+fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> Weights {
+    let (mut train, mut valid) = load(paths);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    apply_teacher(&mut train, &mut valid, lambda);
+    let codes = CodeModel;
+    let as_params = |w: &Weights| -> Vec<f64> {
+        w.pcode
+            .iter()
+            .chain(&w.pcode_late)
+            .chain(&w.threat)
+            .map(|&v| v as f64)
+            .collect()
+    };
+    let current = as_params(weights);
+    let mut best = weights.clone();
+    let mut best_loss = loss(&codes, &valid, &current);
+    eprintln!(
+        "current: train {:.6}, validation {best_loss:.6}",
+        loss(&codes, &train, &current)
+    );
+    for &l2 in &[1e-6, 1e-7, 1e-8] {
+        let p = optimize(&codes, &train, &current, &current, l2, epochs);
+        let rounded: Vec<i32> = p.iter().map(|&v| v.round() as i32).collect();
+        let candidate = Weights {
+            pcode: rounded[..PCODE_COUNT].to_vec(),
+            pcode_late: rounded[PCODE_COUNT..2 * PCODE_COUNT].to_vec(),
+            threat: rounded[2 * PCODE_COUNT..].to_vec(),
+            ..weights.clone()
+        };
+        let valid_loss = loss(&codes, &valid, &as_params(&candidate));
+        eprintln!(
+            "local, l2 {l2:e}: train {:.6}, validation {valid_loss:.6}",
+            loss(&codes, &train, &p)
+        );
+        if valid_loss < best_loss {
+            best_loss = valid_loss;
+            best = candidate;
+        }
+    }
+    eprintln!("kept validation loss {best_loss:.6}");
+    best
 }
 
 /// Positions an entry of the threat table needs before `fit-threat` refits
