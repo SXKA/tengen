@@ -208,6 +208,8 @@ jobs:
           rule="${{ inputs.rule }}"
           current=crates/engine/src/weights.txt
           [ "$rule" = freestyle ] || current="crates/engine/src/weights-$rule.txt"
+          # Rules without their own file use the freestyle weights.
+          [ -f "$current" ] || current=crates/engine/src/weights.txt
           if [ "${{ inputs.mode }}" = policy ]; then
             artifacts/tengen-tune fit-policy --data games.txt --weights "$current" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = threat ]; then
