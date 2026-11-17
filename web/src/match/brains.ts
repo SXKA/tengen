@@ -322,7 +322,8 @@ export class WorkerTransport implements Transport {
             fail(message.retry ? new RetryError(message.message) : new Error(message.message));
         }
       };
-      this.worker.onerror = (event) => fail(new Error(event.message || "the engine failed to load"));
+      this.worker.onerror = (event) =>
+        fail(new Error(event.message || "the engine stopped while loading; the browser may be short of memory"));
     });
     this.worker.postMessage({ type: "start", ...start });
   }
@@ -391,9 +392,15 @@ export class HostedBrain extends PiskvorkBrain {
       try {
         this.threads = await this.load(message);
       } catch (error) {
-        if (!(error instanceof RetryError)) throw error;
-        // Its threads did not start in this browser: one thread, then.
-        this.threads = await this.load({ ...message, threads: 1 });
+        if (error instanceof RetryError) {
+          // Its threads did not start in this browser: one thread, then.
+          this.threads = await this.load({ ...message, threads: 1 });
+        } else {
+          // A worker can die while loading when a phone is short of memory,
+          // and a fresh one often loads once the old one's memory is back.
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          this.threads = await this.load(message);
+        }
       }
       this.loadedFor = key;
     }

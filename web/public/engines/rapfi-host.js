@@ -19,7 +19,21 @@ const BASE = new URL("./rapfi/", self.location.href).href;
 // Emscripten starts Rapfi's threads with the script of the worker that
 // loaded it, which is this one: those threads load Rapfi itself instead.
 if (self.name === "em-pthread") importScripts(BASE + "rapfi-multi-simd128.js");
-else self.onmessage = host;
+else {
+  self.onmessage = host;
+  // Anything thrown outside the start promise (a command that aborts the
+  // engine, memory that cannot grow) would reach the page as a bare error
+  // event, which Safari sends without its message: pass the text on.
+  self.addEventListener("error", (event) => {
+    event.preventDefault();
+    report(event.error || event.message);
+  });
+  self.addEventListener("unhandledrejection", (event) => report(event.reason));
+}
+
+function report(error) {
+  self.postMessage({ type: "error", message: String(error && error.message ? error.message : error || "unknown error") });
+}
 const NETWORKS_COMMIT = "7eeb19b55219a48138756293f92211a1539bab4d";
 const MIRRORS = [
   // This site, when its build could fetch them; then two CDNs.
@@ -45,12 +59,16 @@ const waiting = [];
 function host(event) {
   const message = event.data;
   if (message.type === "start") {
-    start(message).catch((error) =>
-      self.postMessage({ type: "error", message: String(error && error.message ? error.message : error) }),
-    );
+    start(message).catch(report);
   } else if (message.type === "command") {
-    if (engine) engine.sendCommand(message.command);
-    else waiting.push(message.command);
+    if (!engine) waiting.push(message.command);
+    else {
+      try {
+        engine.sendCommand(message.command);
+      } catch (error) {
+        report(error);
+      }
+    }
   }
 }
 
@@ -159,6 +177,12 @@ async function start({ evaluator, rule, threads }) {
   importScripts(script);
   let alive = null;
   const life = new Promise((resolve) => (alive = resolve));
+  // The engine's file system keeps its own copy: let these go once written,
+  // which matters on phones, where two engines and their networks crowd the
+  // memory a page may use.
+  let contents = own.concat(big);
+  own.length = 0;
+  big.length = 0;
   const loading = self.Rapfi({
     locateFile: (path) => BASE + path,
     onReceiveStdout: (line) => {
@@ -169,7 +193,8 @@ async function start({ evaluator, rule, threads }) {
     onExit: (code) => self.postMessage({ type: "error", message: `Rapfi exited with code ${code}` }),
     preRun: [
       (module) => {
-        for (const [name, bytes] of own.concat(big)) module.FS.writeFile("/" + name, bytes);
+        for (const [name, bytes] of contents) module.FS.writeFile("/" + name, bytes);
+        contents = null;
       },
     ],
   });

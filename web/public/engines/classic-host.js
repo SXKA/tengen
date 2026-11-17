@@ -20,7 +20,19 @@ const BASE = new URL("./classic/", self.location.href).href;
 // Emscripten starts SlowRenju's timer thread with the script of the worker
 // that loaded it, which is this one: that thread loads SlowRenju instead.
 if (self.name === "em-pthread") importScripts(BASE + "slowrenju.js");
-else self.onmessage = host;
+else {
+  self.onmessage = host;
+  // Pass on what would otherwise reach the page as a bare error event.
+  self.addEventListener("error", (event) => {
+    event.preventDefault();
+    report(event.error || event.message);
+  });
+  self.addEventListener("unhandledrejection", (event) => report(event.reason));
+}
+
+function report(error) {
+  self.postMessage({ type: "error", message: String(error && error.message ? error.message : error || "unknown error") });
+}
 
 let brain = null;
 const waiting = [];
