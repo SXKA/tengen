@@ -556,6 +556,9 @@ struct Worker<'a> {
     /// History of attacking moves (an open three or more for the mover),
     /// kept apart from quiet moves as in Rapfi.
     attack_history: Box<[[i32; CELLS]; 2]>,
+    /// Rapfi's counter moves: by the color and cell of the opponent's last
+    /// move, the reply that last refuted it and the combination it made.
+    counters: Box<[[(Pos, Pattern4); CELLS]; 2]>,
     killers: Vec<[Pos; 2]>,
     evals: Vec<Value>,
     /// The search parameters, copied for quick access.
@@ -578,6 +581,7 @@ impl<'a> Worker<'a> {
             root_depth: 0,
             history: Box::new([[0; CELLS]; 2]),
             attack_history: Box::new([[0; CELLS]; 2]),
+            counters: Box::new([[(Pos::NONE, Pattern4::None); CELLS]; 2]),
             killers: vec![[Pos::NONE; 2]; plies],
             p: *params(),
             evals: vec![0; plies],
@@ -970,12 +974,18 @@ impl<'a> Worker<'a> {
             return 0;
         }
         let killers = self.killers[ply];
+        let counter = self.board.last_move().map_or((Pos::NONE, Pattern4::None), |last| {
+            self.counters[them as usize][last.index()]
+        });
         for m in list.iter_mut() {
             if Some(m.pos) == tt_move {
                 m.score = i32::MAX;
             } else {
                 if killers.contains(&m.pos) {
                     m.score += 300;
+                }
+                if m.pos == counter.0 && counter.1 <= self.board.p4(m.pos, us) {
+                    m.score += 150;
                 }
                 if self.board.p4(m.pos, us) >= Pattern4::HFlex3 {
                     m.score += self.attack_history[us as usize][m.pos.index()] / 16;
@@ -1077,6 +1087,12 @@ impl<'a> Worker<'a> {
                         self.update_pv(ply, pos);
                     }
                     if v >= beta {
+                        // Not after a four: the reply was forced.
+                        if let Some(last) = self.board.last_move()
+                            && self.board.p4_count(them, Pattern4::AFive) == 0
+                        {
+                            self.counters[them as usize][last.index()] = (pos, self.board.p4(pos, us));
+                        }
                         let attack = self.board.p4(pos, us) >= Pattern4::HFlex3;
                         if attack {
                             let bonus = (depth * depth * 8).min(3200);
