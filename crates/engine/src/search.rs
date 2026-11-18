@@ -553,6 +553,9 @@ struct Worker<'a> {
     seldepth: usize,
     root_depth: i32,
     history: Box<[[i32; CELLS]; 2]>,
+    /// History of attacking moves (an open three or more for the mover),
+    /// kept apart from quiet moves as in Rapfi.
+    attack_history: Box<[[i32; CELLS]; 2]>,
     killers: Vec<[Pos; 2]>,
     evals: Vec<Value>,
     /// The search parameters, copied for quick access.
@@ -574,6 +577,7 @@ impl<'a> Worker<'a> {
             seldepth: 0,
             root_depth: 0,
             history: Box::new([[0; CELLS]; 2]),
+            attack_history: Box::new([[0; CELLS]; 2]),
             killers: vec![[Pos::NONE; 2]; plies],
             p: *params(),
             evals: vec![0; plies],
@@ -827,6 +831,11 @@ impl<'a> Worker<'a> {
         *h += bonus - *h * bonus.abs() / HISTORY_MAX;
     }
 
+    fn attack_history_update(&mut self, color: usize, pos: Pos, bonus: i32) {
+        let h = &mut self.attack_history[color][pos.index()];
+        *h += bonus - *h * bonus.abs() / HISTORY_MAX;
+    }
+
     fn search<const PV: bool>(
         &mut self,
         mut alpha: Value,
@@ -968,7 +977,11 @@ impl<'a> Worker<'a> {
                 if killers.contains(&m.pos) {
                     m.score += 300;
                 }
-                m.score += self.history[us as usize][m.pos.index()] / 32;
+                if self.board.p4(m.pos, us) >= Pattern4::HFlex3 {
+                    m.score += self.attack_history[us as usize][m.pos.index()] / 16;
+                } else {
+                    m.score += self.history[us as usize][m.pos.index()] / 32;
+                }
             }
         }
         list.sort_unstable_by_key(|m| std::cmp::Reverse(m.score));
@@ -979,6 +992,8 @@ impl<'a> Worker<'a> {
         let mut best_move = None;
         let mut quiets = [Pos::NONE; 32];
         let mut quiet_count = 0;
+        let mut attacks = [Pos::NONE; 16];
+        let mut attack_count = 0;
         // Rapfi's move-count pruning: the limit grows as depth^1.3, so it
         // keeps pruning at every depth, not only near the leaves.
         let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(1.3) as i32) / (2 - improving as i32);
@@ -1062,7 +1077,14 @@ impl<'a> Worker<'a> {
                         self.update_pv(ply, pos);
                     }
                     if v >= beta {
-                        if !tactical {
+                        let attack = self.board.p4(pos, us) >= Pattern4::HFlex3;
+                        if attack {
+                            let bonus = (depth * depth * 8).min(3200);
+                            self.attack_history_update(us as usize, pos, bonus);
+                            for &q in &attacks[..attack_count] {
+                                self.attack_history_update(us as usize, q, -bonus);
+                            }
+                        } else if !tactical {
                             let bonus = (depth * depth * 8).min(3200);
                             self.history_update(us as usize, pos, bonus);
                             for &q in &quiets[..quiet_count] {
@@ -1085,6 +1107,10 @@ impl<'a> Worker<'a> {
             if !tactical && quiet_count < quiets.len() {
                 quiets[quiet_count] = pos;
                 quiet_count += 1;
+            }
+            if self.board.p4(pos, us) >= Pattern4::HFlex3 && attack_count < attacks.len() {
+                attacks[attack_count] = pos;
+                attack_count += 1;
             }
         }
         self.lists[ply] = list;
