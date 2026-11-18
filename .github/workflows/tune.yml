@@ -45,7 +45,7 @@ on:
       mode:
         description: Fit every table, refine the current evaluation tables (local; local-strong stays closer), or refit only the threat or move-ordering tables
         type: choice
-        options: [full, local, local-strong, threat, window, policy]
+        options: [full, local, local-strong, threat, window, window-space, policy]
         default: full
       relabel:
         description: With a teacher and an earlier run, label its games again instead of reusing its labels
@@ -215,9 +215,11 @@ jobs:
             [ "${{ inputs.mode }}" = local-strong ] && l2=1e-4,1e-5
             artifacts/tengen-tune fit-local --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
               --l2 "$l2" --rule "$rule" --out weights.txt 2>&1 | tee fit.log
-          elif [ "${{ inputs.mode }}" = window ]; then
+          elif [ "${{ inputs.mode }}" = window ] || [ "${{ inputs.mode }}" = window-space ]; then
+            kinds=4
+            [ "${{ inputs.mode }}" = window-space ] && kinds=2
             artifacts/tengen-tune fit-window --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
-              --rule "$rule" --out weights.txt 2>&1 | tee fit.log
+              --kinds $kinds --rule "$rule" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = policy ]; then
             artifacts/tengen-tune fit-policy --data games.txt --weights "$current" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = threat ]; then
