@@ -899,6 +899,9 @@ impl<'a> Worker<'a> {
         let key = board.hash();
         let tte = self.shared.tt.probe(key);
         let tt_move = tte.and_then(|e| e.best_move).filter(|&m| board.is_empty(m));
+        // On the principal variation now or when last stored (Rapfi's and
+        // Stockfish's ttPv): such nodes are reduced less.
+        let tt_pv = PV || tte.is_some_and(|e| e.is_pv);
         if !PV
             && let Some(e) = tte
             && e.depth >= depth
@@ -1060,7 +1063,7 @@ impl<'a> Worker<'a> {
                 if depth >= 3 && !four {
                     r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
                     r += cut_node as i32;
-                    r -= PV as i32 + improving as i32;
+                    r -= tt_pv as i32 + improving as i32;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
                     r -= tactical as i32;
                     r = r.clamp(0, new_depth - 1);
@@ -1146,7 +1149,7 @@ impl<'a> Worker<'a> {
                 eval: if in_threat { 0 } else { static_eval },
                 depth,
                 bound,
-                is_pv: PV,
+                is_pv: tt_pv,
             },
         );
         best
