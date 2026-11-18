@@ -37,7 +37,9 @@ use std::time::Instant;
 use tengen_arena::brain::Brain;
 use tengen_arena::openings::{Rng, opening};
 use tengen_arena::record::{Outcome, parse_game, write_game};
-use tengen_engine::eval::{self, DEFAULT_FACTORED, Factored, Features, SCALE, THREAT_COUNT, Weights};
+use tengen_engine::eval::{
+    self, DEFAULT_FACTORED, Factored, Features, SCALE, THREAT_COUNT, WINDOW_KINDS, WINDOW_WEIGHTS, Weights,
+};
 use tengen_engine::movegen;
 use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
 use tengen_engine::search::MATE_BOUND;
@@ -51,6 +53,7 @@ const USAGE: &str = "usage:
                        [--rule freestyle] [--seed 1] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
+  tengen-tune fit-window --data FILE[,FILE...] [--weights FILE] [--epochs 300] [--lambda 1] --out FILE
   tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
                         [--l2 1e-6,1e-7,1e-8] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
@@ -143,6 +146,13 @@ fn main() {
                 lambda,
                 &strengths,
             );
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-window") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let epochs = number("--epochs", 300) as usize;
+            let tuned = fit_window(&data.split(',').collect::<Vec<_>>(), &weights, epochs, lambda);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-threat") => {
@@ -839,6 +849,92 @@ fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, stre
     best
 }
 
+/// Fit the open-window weights on top of `weights`, every other table kept:
+/// a logistic fit of eight numbers (early and late, windows with one to
+/// four stones) to the residual of the current evaluation.
+fn fit_window(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> Weights {
+    let (mut train, mut valid) = load(paths);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    apply_teacher(&mut train, &mut valid, lambda);
+    let without = Weights {
+        window: vec![0; WINDOW_WEIGHTS],
+        ..weights.clone()
+    };
+    // Evaluation without the window term, and the term's inputs.
+    let prepare = |samples: &[Sample]| -> Vec<(f64, f64, [f64; WINDOW_KINDS], f64)> {
+        samples
+            .iter()
+            .map(|s| {
+                let base = s.features.dot(&without) as f64;
+                (base, s.features.phase(), s.features.window.map(f64::from), s.result)
+            })
+            .collect()
+    };
+    let (train, valid) = (prepare(&train), prepare(&valid));
+    let predict = |w: &[f64; WINDOW_WEIGHTS], &(base, t, d, _): &(f64, f64, [f64; WINDOW_KINDS], f64)| {
+        let (mut early, mut late) = (0.0, 0.0);
+        for k in 0..WINDOW_KINDS {
+            early += w[k] * d[k];
+            late += w[WINDOW_KINDS + k] * d[k];
+        }
+        sigmoid(base + (1.0 - t) * early + t * late)
+    };
+    let loss = |w: &[f64; WINDOW_WEIGHTS], set: &[(f64, f64, [f64; WINDOW_KINDS], f64)]| {
+        set.iter().map(|x| (x.3 - predict(w, x)).powi(2)).sum::<f64>() / set.len() as f64
+    };
+    let start: [f64; WINDOW_WEIGHTS] = std::array::from_fn(|i| weights.window[i] as f64);
+    let mut w = start;
+    eprintln!(
+        "window: start train {:.6}, validation {:.6}",
+        loss(&w, &train),
+        loss(&w, &valid)
+    );
+    // Adam on the full batch.
+    let (mut m, mut v) = ([0.0; WINDOW_WEIGHTS], [0.0; WINDOW_WEIGHTS]);
+    let (lr, b1, b2) = (0.5, 0.9, 0.999);
+    for epoch in 1..=epochs {
+        let mut grad = [0.0; WINDOW_WEIGHTS];
+        for x in &train {
+            let p = predict(&w, x);
+            // d/d(eval) of (y - p)^2, with p = sigmoid(eval / SCALE).
+            let g = 2.0 * (p - x.3) * p * (1.0 - p) / SCALE;
+            for k in 0..WINDOW_KINDS {
+                grad[k] += g * (1.0 - x.1) * x.2[k];
+                grad[WINDOW_KINDS + k] += g * x.1 * x.2[k];
+            }
+        }
+        for i in 0..WINDOW_WEIGHTS {
+            let gi = grad[i] / train.len() as f64;
+            m[i] = b1 * m[i] + (1.0 - b1) * gi;
+            v[i] = b2 * v[i] + (1.0 - b2) * gi * gi;
+            let (mh, vh) = (
+                m[i] / (1.0 - b1.powi(epoch as i32)),
+                v[i] / (1.0 - b2.powi(epoch as i32)),
+            );
+            w[i] -= lr * mh / (vh.sqrt() + 1e-12);
+        }
+        if epoch % 50 == 0 || epoch == epochs {
+            eprintln!(
+                "window epoch {epoch}: train {:.6}, validation {:.6}, weights {:?}",
+                loss(&w, &train),
+                loss(&w, &valid),
+                w.map(|x| x.round() as i32)
+            );
+        }
+    }
+    let rounded: [f64; WINDOW_WEIGHTS] = w.map(f64::round);
+    if loss(&rounded, &valid) >= loss(&start, &valid) {
+        eprintln!("window: no improvement on validation; weights kept");
+        return weights.clone();
+    }
+    Weights {
+        window: rounded.iter().map(|&x| x as i32).collect(),
+        ..weights.clone()
+    }
+}
+
 /// Positions an entry of the threat table needs before `fit-threat` refits
 /// it; rarer entries keep their value.
 const THREAT_MIN_SAMPLES: usize = 200;
@@ -1027,6 +1123,7 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool, lambda: f64) -> Weights {
             threat,
             policy_own,
             policy_opp,
+            window: vec![0; WINDOW_WEIGHTS],
         };
         let valid_loss = loss(&codes, &valid, &as_params(&weights));
         eprintln!(

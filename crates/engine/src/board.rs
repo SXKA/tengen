@@ -246,6 +246,7 @@ struct Undo {
     value: [i32; 2],
     value_late: [i32; 2],
     p4_count: [[u16; Pattern4::COUNT]; 2],
+    windows: [[i16; 6]; 2],
 }
 
 /// Zobrist keys, derived deterministically so every board agrees.
@@ -322,6 +323,10 @@ pub struct Board {
     value_late: [i32; 2],
     /// Number of empty cells with each combination, per color.
     p4_count: [[u16; Pattern4::COUNT]; 2],
+    /// Five-cell windows on the board still open to each color (none of the
+    /// opponent's stones or walls in them), by how many of its own stones
+    /// they hold: room the color has left to make five.
+    windows: [[i16; 6]; 2],
 }
 
 impl Board {
@@ -359,6 +364,7 @@ impl Board {
             value: [0; 2],
             value_late: [0; 2],
             p4_count: [[0; Pattern4::COUNT]; 2],
+            windows: [[0; 6]; 2],
         };
         for dir in 0..4 {
             for line in 0..LINES {
@@ -369,6 +375,13 @@ impl Board {
                     }
                 }
                 board.edges[dir][line] = edge;
+                // Every window on an empty board is open to both colors.
+                for start in 0..=32 - 5 {
+                    if edge & (0x1f << start) == 0 {
+                        board.windows[0][0] += 1;
+                        board.windows[1][0] += 1;
+                    }
+                }
             }
         }
         let tables = Tables::get();
@@ -670,6 +683,7 @@ impl Board {
             value: self.value,
             value_late: self.value_late,
             p4_count: self.p4_count,
+            windows: self.windows,
         }
     }
 
@@ -706,6 +720,7 @@ impl Board {
         self.value = undo.value;
         self.value_late = undo.value_late;
         self.p4_count = undo.p4_count;
+        self.windows = undo.windows;
         self.area = undo.area;
     }
 
@@ -871,6 +886,39 @@ impl Board {
         self.place::<false>(pos, stone);
     }
 
+    /// Add `sign` times the windows through `pos` to the open-window counts:
+    /// called with -1 before a stone changes and +1 after.
+    #[inline]
+    fn count_windows(&mut self, pos: Pos, sign: i16) {
+        for dir in 0..4 {
+            let (line, at) = self.line_of(pos, dir);
+            let edge = self.edges[dir][line];
+            let black = self.lines[0][dir][line];
+            let white = self.lines[1][dir][line];
+            let wall = self.walls[dir][line];
+            for start in at + PAD - 4..=at + PAD {
+                let mask = 0x1f << start;
+                if edge & mask != 0 {
+                    continue;
+                }
+                let (b, w, x) = ((black & mask).count_ones(), (white & mask).count_ones(), wall & mask);
+                if w == 0 && x == 0 {
+                    self.windows[0][b as usize] += sign;
+                }
+                if b == 0 && x == 0 {
+                    self.windows[1][w as usize] += sign;
+                }
+            }
+        }
+    }
+
+    /// Five-cell windows still open to `color`, by how many of its stones
+    /// they hold (0 to 5).
+    #[inline]
+    pub fn open_windows(&self, color: Color) -> &[i16; 6] {
+        &self.windows[color.index()]
+    }
+
     /// [`Board::set_stone`], saving every changed cell to the journal first
     /// when `JOURNAL`.
     #[inline]
@@ -882,6 +930,7 @@ impl Board {
         if old == EMPTY {
             self.detach(pos, values);
         }
+        self.count_windows(pos, -1);
         for dir in 0..4 {
             let (line, at) = self.line_of(pos, dir);
             let bit = 1u32 << (at + PAD);
@@ -892,6 +941,7 @@ impl Board {
             }
         }
         self.cells[slot(pos)].stone = stone;
+        self.count_windows(pos, 1);
         // An occupied cell's patterns are never read and go stale; bring them
         // up to date when it is emptied again.
         if stone == EMPTY {
@@ -1075,6 +1125,71 @@ impl std::fmt::Display for Board {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// Open windows counted from scratch.
+    fn recount_windows(board: &Board) -> [[i16; 6]; 2] {
+        let n = board.size() as isize;
+        let mut out = [[0i16; 6]; 2];
+        let stone = |x: isize, y: isize| board.stone(Pos::new(x as usize, y as usize));
+        for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+            for y in 0..n {
+                for x in 0..n {
+                    let (ex, ey) = (x + 4 * dx, y + 4 * dy);
+                    if !(0..n).contains(&ex) || !(0..n).contains(&ey) {
+                        continue;
+                    }
+                    let mut count = [0usize; 2];
+                    for i in 0..5 {
+                        if let Some(c) = stone(x + i * dx, y + i * dy) {
+                            count[c.index()] += 1;
+                        }
+                    }
+                    if count[1] == 0 {
+                        out[0][count[0]] += 1;
+                    }
+                    if count[0] == 0 {
+                        out[1][count[1]] += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn open_windows_follow_moves_and_undos() {
+        let mut board = Board::new(15);
+        assert_eq!(
+            [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
+            recount_windows(&board)
+        );
+        let moves = [
+            (7, 7),
+            (8, 8),
+            (7, 8),
+            (0, 0),
+            (14, 14),
+            (6, 6),
+            (7, 9),
+            (0, 14),
+            (7, 10),
+            (3, 11),
+        ];
+        for &(x, y) in &moves {
+            board.play(Pos::new(x, y));
+            assert_eq!(
+                [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
+                recount_windows(&board)
+            );
+        }
+        for _ in 0..4 {
+            board.undo();
+            assert_eq!(
+                [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
+                recount_windows(&board)
+            );
+        }
+    }
     use super::*;
 
     /// Tiny deterministic generator for tests.

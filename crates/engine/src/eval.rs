@@ -96,7 +96,18 @@ pub struct Weights {
     /// Move-ordering score of playing a cell, by the opponent's pattern code
     /// there (what the move takes away).
     pub policy_opp: Vec<i32>,
+    /// Value of each five-cell window still open to the side to move, less
+    /// the same for the opponent, by how many of the color's stones it holds
+    /// (1 to 4): early in the game, then late ([`WINDOW_WEIGHTS`] in all).
+    /// Room to make five, which line patterns alone do not see across the
+    /// board.
+    pub window: Vec<i32>,
 }
+
+/// Open-window counts the window term weighs: windows holding 1 to 4 stones.
+pub const WINDOW_KINDS: usize = 4;
+/// Entries of [`Weights::window`]: early, then late.
+pub const WINDOW_WEIGHTS: usize = 2 * WINDOW_KINDS;
 
 /// Default move-ordering bonus for what a move makes, by combination.
 pub const DEFAULT_ATTACK: [i32; Pattern4::COUNT] = [0, 0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
@@ -198,6 +209,7 @@ impl Factored {
             threat: self.threat.to_vec(),
             policy_own,
             policy_opp,
+            window: vec![0; WINDOW_WEIGHTS],
         }
     }
 }
@@ -219,13 +231,14 @@ impl Weights {
     /// Parse the text form written by [`Weights`]'s `Display`: one line per
     /// table, a name followed by whitespace-separated integers. Lines
     /// starting with `#` are comments. Missing move-ordering tables get
-    /// their defaults.
+    /// their defaults, a missing window table zeros.
     pub fn parse(text: &str) -> Result<Weights, String> {
         let mut pcode = None;
         let mut pcode_late = None;
         let mut threat = None;
         let mut policy_own = None;
         let mut policy_opp = None;
+        let mut window = None;
         for line in text
             .lines()
             .map(str::trim)
@@ -247,6 +260,7 @@ impl Weights {
                 "threat" => (&mut threat, THREAT_COUNT),
                 "policy_own" => (&mut policy_own, PCODE_COUNT),
                 "policy_opp" => (&mut policy_opp, PCODE_COUNT),
+                "window" => (&mut window, WINDOW_WEIGHTS),
                 _ => return Err(format!("unknown table {name}")),
             };
             if values.len() != len {
@@ -261,6 +275,7 @@ impl Weights {
             threat: threat.ok_or("missing threat table")?,
             policy_own: policy_own.unwrap_or(default_own),
             policy_opp: policy_opp.unwrap_or(default_opp),
+            window: window.unwrap_or_else(|| vec![0; WINDOW_WEIGHTS]),
             pcode,
         })
     }
@@ -275,6 +290,7 @@ impl std::fmt::Display for Weights {
             ("threat", &self.threat),
             ("policy_own", &self.policy_own),
             ("policy_opp", &self.policy_opp),
+            ("window", &self.window),
         ] {
             let values: Vec<String> = table.iter().map(i32::to_string).collect();
             writeln!(f, "{name} {}", values.join(" "))?;
@@ -310,6 +326,7 @@ pub struct CellValues {
     threat: Box<[i32; THREAT_COUNT]>,
     policy_own: Box<[i32; PCODE_COUNT]>,
     policy_opp: Box<[i32; PCODE_COUNT]>,
+    window: [i32; WINDOW_WEIGHTS],
 }
 
 impl CellValues {
@@ -331,6 +348,7 @@ impl CellValues {
             threat: weights.threat.clone().try_into().expect("threat table size"),
             policy_own: weights.policy_own.clone().try_into().expect("policy table size"),
             policy_opp: weights.policy_opp.clone().try_into().expect("policy table size"),
+            window: weights.window.clone().try_into().expect("window table size"),
         }
     }
 
@@ -382,8 +400,15 @@ pub fn evaluate(board: &Board) -> Value {
     let us = board.side_to_move();
     let them = us.opponent();
     let values = board.values();
-    let early = board.pattern_value(us) - board.pattern_value(them);
-    let late = board.pattern_value_late(us) - board.pattern_value_late(them);
+    let (mine, theirs) = (board.open_windows(us), board.open_windows(them));
+    let (mut window_early, mut window_late) = (0, 0);
+    for k in 0..WINDOW_KINDS {
+        let d = (mine[k + 1] - theirs[k + 1]) as i32;
+        window_early += values.window[k] * d;
+        window_late += values.window[WINDOW_KINDS + k] * d;
+    }
+    let early = board.pattern_value(us) - board.pattern_value(them) + window_early;
+    let late = board.pattern_value_late(us) - board.pattern_value_late(them) + window_late;
     blend(early, late, board.ply()) + values.threat[threat_mask(board, us)]
 }
 
@@ -410,6 +435,8 @@ pub struct Features {
     pub threat: usize,
     /// Stones on the board, for the game-phase blend.
     pub ply: usize,
+    /// Own minus opponent open five-cell windows holding 1 to 4 stones.
+    pub window: [i32; WINDOW_KINDS],
 }
 
 impl Features {
@@ -431,10 +458,12 @@ impl Features {
             .filter(|(_, n)| **n != 0)
             .map(|(code, &n)| (code as PatternCode, n))
             .collect();
+        let (mine, theirs) = (board.open_windows(us), board.open_windows(us.opponent()));
         Features {
             pcode,
             threat: threat_mask(board, us),
             ply: board.ply(),
+            window: std::array::from_fn(|k| (mine[k + 1] - theirs[k + 1]) as i32),
         }
     }
 
@@ -450,7 +479,11 @@ impl Features {
             .iter()
             .map(|&(code, n)| n * weights.pcode_late[code as usize])
             .sum();
-        blend(early, late, self.ply) + weights.threat[self.threat]
+        let window_early: i32 = (0..WINDOW_KINDS).map(|k| weights.window[k] * self.window[k]).sum();
+        let window_late: i32 = (0..WINDOW_KINDS)
+            .map(|k| weights.window[WINDOW_KINDS + k] * self.window[k])
+            .sum();
+        blend(early + window_early, late + window_late, self.ply) + weights.threat[self.threat]
     }
 
     /// Weight of the late-game table for this position, from 0 to 1.
