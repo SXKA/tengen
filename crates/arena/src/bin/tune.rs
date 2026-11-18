@@ -19,6 +19,9 @@
 //! the default scores, per line pattern and combination for the mover and
 //! for the opponent, so that a softmax over the candidate moves predicts the
 //! move played. Run it after `fit`, which resets them to their defaults.
+//! `fit-cross` learns the cross table on top of them: a correction per
+//! position context for what a move makes and what it takes away together,
+//! as in Rapfi's classical policy.
 //! `init` writes the untuned factored defaults.
 //!
 //! `label` asks a stronger Piskvork brain (`--brain`, e.g. Rapfi, searching
@@ -38,7 +41,8 @@ use tengen_arena::brain::Brain;
 use tengen_arena::openings::{Rng, opening};
 use tengen_arena::record::{Outcome, parse_game, write_game};
 use tengen_engine::eval::{
-    self, DEFAULT_FACTORED, Factored, Features, SCALE, THREAT_COUNT, WINDOW_KINDS, WINDOW_WEIGHTS, Weights,
+    self, DEFAULT_FACTORED, Factored, Features, POLICY_CROSS_LEN, PolicyContext, SCALE, THREAT_COUNT, WINDOW_KINDS,
+    WINDOW_WEIGHTS, Weights,
 };
 use tengen_engine::movegen;
 use tengen_engine::pattern::{PCODE_COUNT, Pattern, Pattern4, PatternCode, Tables};
@@ -129,6 +133,14 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let epochs = number("--epochs", 300) as usize;
             let tuned = fit_policy(&data.split(',').collect::<Vec<_>>(), &weights, epochs);
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-cross") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let epochs = number("--epochs", 300) as usize;
+            let l2: f64 = flag("--l2").map_or(1e-7, |v| v.parse().unwrap_or_else(|_| fail("bad --l2")));
+            let min_count = number("--min-count", 500) as usize;
+            let tuned = fit_cross(&data.split(',').collect::<Vec<_>>(), &weights, epochs, l2, min_count);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-local") => {
@@ -1132,6 +1144,7 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool, lambda: f64) -> Weights {
             policy_own,
             policy_opp,
             window: vec![0; WINDOW_WEIGHTS],
+            policy_cross: vec![0; POLICY_CROSS_LEN],
         };
         let valid_loss = loss(&codes, &valid, &as_params(&weights));
         eprintln!(
@@ -1152,11 +1165,17 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool, lambda: f64) -> Weights {
 struct PolicySample {
     candidates: Vec<(PatternCode, PatternCode)>,
     target: usize,
+    /// Each candidate's cross-table cell: the mover's combination there
+    /// times [`Pattern4::COUNT`] plus the opponent's.
+    cross: Vec<u8>,
+    /// The position's [`PolicyContext`].
+    context: u8,
 }
 
-/// Positions where the mover chose freely among all candidates (no forced
-/// reply), with every tenth game held out.
-fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
+/// Positions with a move to learn, with every tenth game held out: where
+/// the mover chose freely among all candidates, and with `forced` also
+/// where the candidates only answer a threat.
+fn load_policy(paths: &[&str], forced: bool) -> (Vec<PolicySample>, Vec<PolicySample>) {
     let lines = read_lines(paths);
     let per_game = par_chunks(&lines, |index, line| {
         let mut samples = Vec::new();
@@ -1177,15 +1196,28 @@ fn load_policy(paths: &[&str]) -> (Vec<PolicySample>, Vec<PolicySample>) {
             };
             if board.ply() >= 2
                 && let Some(wanted) = wanted
-                && movegen::generate(&mut board, &mut list) == (movegen::Gen::Moves { forced: false })
+                && let movegen::Gen::Moves { forced: was_forced } = movegen::generate(&mut board, &mut list)
+                && (forced || !was_forced)
+                && list.len() > 1
                 && let Some(target) = list.iter().position(|m| m.pos == wanted)
             {
                 let us = board.side_to_move();
+                let them = us.opponent();
                 let candidates = list
                     .iter()
-                    .map(|m| (board.pcode(m.pos, us), board.pcode(m.pos, us.opponent())))
+                    .map(|m| (board.pcode(m.pos, us), board.pcode(m.pos, them)))
                     .collect();
-                samples.push(PolicySample { candidates, target });
+                let cross = list
+                    .iter()
+                    .map(|m| (board.p4(m.pos, us) as usize * Pattern4::COUNT + board.p4(m.pos, them) as usize) as u8)
+                    .collect();
+                let context = movegen::policy_context(&board) as u8;
+                samples.push(PolicySample {
+                    candidates,
+                    target,
+                    cross,
+                    context,
+                });
             }
             board.play(played);
         }
@@ -1228,7 +1260,7 @@ fn policy_loss(samples: &[PolicySample], own: &[f64], opp: &[f64], scale: f64) -
 /// Learn the move-ordering tables as corrections to the defaults: one per
 /// line pattern and per combination, for the mover and for the opponent.
 fn fit_policy(paths: &[&str], start: &Weights, epochs: usize) -> Weights {
-    let (train, valid) = load_policy(paths);
+    let (train, valid) = load_policy(paths, false);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
     }
@@ -1366,6 +1398,164 @@ fn fit_policy(paths: &[&str], start: &Weights, epochs: usize) -> Weights {
     Weights {
         policy_own: own.iter().map(|x| x.round() as i32).collect(),
         policy_opp: opp.iter().map(|x| x.round() as i32).collect(),
+        ..start.clone()
+    }
+}
+
+/// Mean cross-entropy and top-1 accuracy per [`PolicyContext`], then over
+/// all positions, of the move-ordering tables plus a cross table.
+fn cross_loss(samples: &[PolicySample], own: &[f64], opp: &[f64], cross: &[f64], scale: f64) -> Vec<(f64, f64, usize)> {
+    let c = PolicyContext::COUNT;
+    let totals = par_gradient(samples, 3 * (c + 1), |s, acc| {
+        let block = s.context as usize * Pattern4::COUNT * Pattern4::COUNT;
+        let scores: Vec<f64> = s
+            .candidates
+            .iter()
+            .zip(&s.cross)
+            .map(|(&(a, b), &x)| (own[a as usize] + opp[b as usize] + cross[block + x as usize]) / scale)
+            .collect();
+        let max = scores.iter().cloned().fold(f64::MIN, f64::max);
+        let sum: f64 = scores.iter().map(|v| (v - max).exp()).sum();
+        let loss = max + sum.ln() - scores[s.target];
+        let hit = (scores[s.target] >= max) as u8 as f64;
+        for k in [s.context as usize, c] {
+            acc[3 * k] += loss;
+            acc[3 * k + 1] += hit;
+            acc[3 * k + 2] += 1.0;
+        }
+    });
+    totals
+        .chunks(3)
+        .map(|t| (t[0] / t[2].max(1.0), t[1] / t[2].max(1.0), t[2] as usize))
+        .collect()
+}
+
+/// Print [`cross_loss`] results, one line per context.
+fn report_cross(label: &str, results: &[(f64, f64, usize)]) {
+    const NAMES: [&str; PolicyContext::COUNT + 1] = [
+        "opponent open four",
+        "opponent four-three",
+        "mutual race",
+        "attacking",
+        "defending",
+        "quiet",
+        "all",
+    ];
+    for (name, &(loss, acc, n)) in NAMES.iter().zip(results) {
+        eprintln!(
+            "{label} {name:>20}: loss {loss:.4}, top-1 {:.1}% ({n} positions)",
+            acc * 100.0
+        );
+    }
+}
+
+/// Learn the move-ordering cross table, Rapfi's classical policy residual:
+/// a correction per context for the combination a move makes for the
+/// mover and the one it takes from the opponent, on top of the current
+/// tables, so that a softmax over the candidates predicts the move played
+/// (or the teacher's). Cells seen fewer than `min_count` times stay at
+/// zero, and every cell is pulled toward zero with strength `l2`.
+fn fit_cross(paths: &[&str], start: &Weights, epochs: usize, l2: f64, min_count: usize) -> Weights {
+    let (train, valid) = load_policy(paths, true);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    let own: Vec<f64> = start.policy_own.iter().map(|&v| v as f64).collect();
+    let opp: Vec<f64> = start.policy_opp.iter().map(|&v| v as f64).collect();
+    let mut params: Vec<f64> = start.policy_cross.iter().map(|&v| v as f64).collect();
+
+    let all = |samples: &[PolicySample], params: &[f64], scale: f64| {
+        cross_loss(samples, &own, &opp, params, scale)[PolicyContext::COUNT].0
+    };
+    let scale = [25.0, 50.0, 100.0, 200.0, 400.0, 800.0]
+        .into_iter()
+        .min_by(|&a, &b| all(&train, &params, a).total_cmp(&all(&train, &params, b)))
+        .unwrap();
+    let scale = [scale * 0.7, scale, scale * 1.4]
+        .into_iter()
+        .min_by(|&a, &b| all(&train, &params, a).total_cmp(&all(&train, &params, b)))
+        .unwrap();
+    eprintln!("temperature {scale:.0}");
+    let before = cross_loss(&valid, &own, &opp, &params, scale);
+    report_cross("before", &before);
+
+    // How often each cell appears among the candidates.
+    let mut seen = vec![0usize; POLICY_CROSS_LEN];
+    for s in &train {
+        let block = s.context as usize * Pattern4::COUNT * Pattern4::COUNT;
+        for &x in &s.cross {
+            seen[block + x as usize] += 1;
+        }
+    }
+    let frozen: Vec<bool> = seen.iter().map(|&n| n < min_count).collect();
+    eprintln!(
+        "{} of {POLICY_CROSS_LEN} cells seen at least {min_count} times",
+        frozen.iter().filter(|&&f| !f).count()
+    );
+
+    let n = POLICY_CROSS_LEN;
+    let (mut m, mut v) = (vec![0.0; n], vec![0.0; n]);
+    let (lr, beta1, beta2) = (2.0, 0.9, 0.999);
+    let count = train.len() as f64;
+    for epoch in 1..=epochs {
+        let mut grad = par_gradient(&train, n, |s, g| {
+            let block = s.context as usize * Pattern4::COUNT * Pattern4::COUNT;
+            let scores: Vec<f64> = s
+                .candidates
+                .iter()
+                .zip(&s.cross)
+                .map(|(&(a, b), &x)| (own[a as usize] + opp[b as usize] + params[block + x as usize]) / scale)
+                .collect();
+            let max = scores.iter().cloned().fold(f64::MIN, f64::max);
+            let sum: f64 = scores.iter().map(|x| (x - max).exp()).sum();
+            for (i, &x) in s.cross.iter().enumerate() {
+                let p = (scores[i] - max).exp() / sum;
+                g[block + x as usize] += (p - (i == s.target) as u8 as f64) / scale / count;
+            }
+        });
+        for i in 0..n {
+            if frozen[i] {
+                grad[i] = 0.0;
+                continue;
+            }
+            grad[i] += l2 * params[i];
+            m[i] = beta1 * m[i] + (1.0 - beta1) * grad[i];
+            v[i] = beta2 * v[i] + (1.0 - beta2) * grad[i] * grad[i];
+            let m_hat = m[i] / (1.0 - beta1.powi(epoch as i32));
+            let v_hat = v[i] / (1.0 - beta2.powi(epoch as i32));
+            params[i] -= lr * m_hat / (v_hat.sqrt() + 1e-12);
+        }
+        if epoch % 50 == 0 {
+            let (loss, acc, _) = cross_loss(&valid, &own, &opp, &params, scale)[PolicyContext::COUNT];
+            eprintln!("epoch {epoch}: validation loss {loss:.4}, top-1 {:.1}%", acc * 100.0);
+        }
+    }
+    let rounded: Vec<i32> = params.iter().map(|x| x.round() as i32).collect();
+    let after = cross_loss(
+        &valid,
+        &own,
+        &opp,
+        &rounded.iter().map(|&x| x as f64).collect::<Vec<_>>(),
+        scale,
+    );
+    report_cross("after", &after);
+    for (context, block) in rounded.chunks(Pattern4::COUNT * Pattern4::COUNT).enumerate() {
+        let largest: Vec<String> = {
+            let mut cells: Vec<(usize, i32)> = block.iter().copied().enumerate().filter(|&(_, x)| x != 0).collect();
+            cells.sort_by_key(|&(_, x)| std::cmp::Reverse(x.abs()));
+            cells
+                .iter()
+                .take(8)
+                .map(|&(i, x)| format!("{}x{}:{x}", i / Pattern4::COUNT, i % Pattern4::COUNT))
+                .collect()
+        };
+        eprintln!(
+            "context {context} largest cells (own x opponent): {}",
+            largest.join(" ")
+        );
+    }
+    Weights {
+        policy_cross: rounded,
         ..start.clone()
     }
 }

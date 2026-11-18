@@ -16,7 +16,7 @@
 //! five that can only be blocked on a forbidden point wins.
 
 use crate::board::{Board, Color, Pos};
-use crate::eval::CellValues;
+use crate::eval::{CellValues, PolicyContext};
 use crate::pattern::{Pattern, Pattern4, Tables};
 use crate::rule::Rule;
 
@@ -39,10 +39,49 @@ pub enum Gen {
 }
 
 /// Ordering score of `pos` for the side `us`: what it builds plus what it
-/// prevents, from the move-ordering tables of the evaluation weights.
+/// prevents, from the move-ordering tables of the evaluation weights, plus
+/// the cross-table correction for the two together in `context` (from
+/// [`cross_context`]).
 #[inline]
-pub fn move_score(board: &Board, pos: Pos, us: Color, values: &CellValues) -> i32 {
-    values.policy(board.pcode(pos, us), board.pcode(pos, us.opponent()))
+pub fn move_score(board: &Board, pos: Pos, us: Color, values: &CellValues, context: Option<PolicyContext>) -> i32 {
+    let them = us.opponent();
+    let base = values.policy(board.pcode(pos, us), board.pcode(pos, them));
+    match context {
+        Some(context) => base + values.policy_cross(context, board.p4(pos, us), board.p4(pos, them)),
+        None => base,
+    }
+}
+
+/// What the position demands of the side to move, as Rapfi's classical
+/// policy classifies it.
+pub fn policy_context(board: &Board) -> PolicyContext {
+    let us = board.side_to_move();
+    let them = us.opponent();
+    if board.p4_count(them, Pattern4::BFlex4) > 0 {
+        return PolicyContext::OpponentFlexFour;
+    }
+    if board.p4_count(them, Pattern4::CBlock4Flex3) > 0 {
+        return PolicyContext::OpponentFourThree;
+    }
+    let ours = board.p4_count_at_least(us, Pattern4::HFlex3) > 0;
+    let theirs = board.p4_count_at_least(them, Pattern4::HFlex3) > 0;
+    match (ours, theirs) {
+        (true, true) => PolicyContext::MutualRace,
+        (true, false) => PolicyContext::SelfAttacking,
+        (false, true) => PolicyContext::OpponentAttacking,
+        (false, false) => PolicyContext::Quiet,
+    }
+}
+
+/// The context to score moves in, or `None` when the cross table has
+/// nothing for it.
+#[inline]
+pub fn cross_context(board: &Board, values: &CellValues) -> Option<PolicyContext> {
+    if !values.has_cross() {
+        return None;
+    }
+    let context = policy_context(board);
+    values.cross_active(context).then_some(context)
 }
 
 /// Fill `moves` for the side to move and report what the position demands.
@@ -54,6 +93,7 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     let us = board.side_to_move();
     let them = us.opponent();
     let values = board.values();
+    let context = cross_context(board, values);
 
     if let Some(pos) = board.five_point(us) {
         return Gen::Win(pos);
@@ -72,7 +112,7 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     }
 
     if board.p4_count(them, Pattern4::BFlex4) > 0 {
-        generate_defences(board, moves, values);
+        generate_defences(board, moves, values, context);
         if moves.is_empty() {
             // Nothing stops the open four: it is played next move and one of
             // its two fives completes the move after.
@@ -85,7 +125,7 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     // only the moves that take it away, and our own fours, are worth
     // searching. If none takes it away, every move is searched.
     if board.p4_count(them, Pattern4::CBlock4Flex3) > 0 {
-        generate_four_three_defences(board, moves, values);
+        generate_four_three_defences(board, moves, values, context);
         if !moves.is_empty() {
             return Gen::Moves { forced: true };
         }
@@ -94,7 +134,7 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
     for pos in board.candidates() {
         moves.push(ScoredMove {
             pos,
-            score: move_score(board, pos, us, values),
+            score: move_score(board, pos, us, values, context),
         });
     }
     if forbids(board) {
@@ -126,7 +166,12 @@ fn fallback(board: &mut Board, moves: &mut Vec<ScoredMove>) {
 
 /// Moves against an opponent who can make an open four: our own fours, and
 /// cells after which no open-four point remains.
-fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &CellValues) {
+fn generate_defences(
+    board: &mut Board,
+    moves: &mut Vec<ScoredMove>,
+    values: &CellValues,
+    context: Option<PolicyContext>,
+) {
     let us = board.side_to_move();
     let them = us.opponent();
 
@@ -169,7 +214,7 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
     let forbid = forbids(board);
     for &pos in &try_cells {
         let four = board.p4(pos, us) >= Pattern4::EBlock4;
-        let score = move_score(board, pos, us, values);
+        let score = move_score(board, pos, us, values, context);
         if four {
             moves.push(ScoredMove { pos, score });
             continue;
@@ -188,7 +233,12 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
 
 /// Moves against an opponent with a four-three point: our own fours, and
 /// cells after which the opponent has no four-three or open-four point.
-fn generate_four_three_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &CellValues) {
+fn generate_four_three_defences(
+    board: &mut Board,
+    moves: &mut Vec<ScoredMove>,
+    values: &CellValues,
+    context: Option<PolicyContext>,
+) {
     let us = board.side_to_move();
     let them = us.opponent();
 
@@ -227,7 +277,7 @@ fn generate_four_three_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, 
 
     let forbid = forbids(board);
     for &pos in &try_cells {
-        let score = move_score(board, pos, us, values);
+        let score = move_score(board, pos, us, values, context);
         if board.p4(pos, us) >= Pattern4::EBlock4 {
             moves.push(ScoredMove { pos, score });
             continue;
@@ -261,11 +311,12 @@ pub fn generate_fours(board: &mut Board, moves: &mut Vec<ScoredMove>) {
         return;
     }
     let values = board.values();
+    let context = cross_context(board, values);
     let tables = Tables::get();
     for pos in board.candidates() {
         let p4 = board.p4(pos, us);
         if p4 >= Pattern4::EBlock4 {
-            let score = (p4 as i32) * 10_000 + move_score(board, pos, us, values);
+            let score = (p4 as i32) * 10_000 + move_score(board, pos, us, values, context);
             moves.push(ScoredMove { pos, score });
         } else if forbid && p4 == Pattern4::Forbidden {
             // Checked below, once the board is free to borrow.
@@ -273,7 +324,7 @@ pub fn generate_fours(board: &mut Board, moves: &mut Vec<ScoredMove>) {
             if plain >= Pattern4::EBlock4 && plain < Pattern4::BFlex4 {
                 moves.push(ScoredMove {
                     pos,
-                    score: -((plain as i32) * 10_000 + move_score(board, pos, us, values)),
+                    score: -((plain as i32) * 10_000 + move_score(board, pos, us, values, context)),
                 });
             }
         }
