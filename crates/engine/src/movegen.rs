@@ -81,6 +81,16 @@ pub fn generate(board: &mut Board, moves: &mut Vec<ScoredMove>) -> Gen {
         return Gen::Moves { forced: true };
     }
 
+    // A four-three point of the opponent wins unless answered, as in Rapfi:
+    // only the moves that take it away, and our own fours, are worth
+    // searching. If none takes it away, every move is searched.
+    if board.p4_count(them, Pattern4::CBlock4Flex3) > 0 {
+        generate_four_three_defences(board, moves, values);
+        if !moves.is_empty() {
+            return Gen::Moves { forced: true };
+        }
+    }
+
     for pos in board.candidates() {
         moves.push(ScoredMove {
             pos,
@@ -173,6 +183,68 @@ fn generate_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &Ce
         if stops {
             moves.push(ScoredMove { pos, score });
         }
+    }
+}
+
+/// Moves against an opponent with a four-three point: our own fours, and
+/// cells after which the opponent has no four-three or open-four point.
+fn generate_four_three_defences(board: &mut Board, moves: &mut Vec<ScoredMove>, values: &CellValues) {
+    let us = board.side_to_move();
+    let them = us.opponent();
+
+    let mut tried = [0u64; crate::board::CELLS.div_ceil(64)];
+    let mut try_cells = Vec::with_capacity(32);
+    let mut mark = |pos: Pos, out: &mut Vec<Pos>| {
+        let (i, b) = (pos.index() / 64, pos.index() % 64);
+        if tried[i] & (1 << b) == 0 {
+            tried[i] |= 1 << b;
+            out.push(pos);
+        }
+    };
+    for point in board.area_cells() {
+        if !board.is_empty(point) || board.p4(point, them) != Pattern4::CBlock4Flex3 {
+            continue;
+        }
+        mark(point, &mut try_cells);
+        for dir in 0..4 {
+            if board.pattern(point, them, dir) < Pattern::B3 {
+                continue;
+            }
+            for k in (-4..=4).filter(|&k| k != 0) {
+                if let Some(q) = board.step(point, dir, k)
+                    && board.is_empty(q)
+                {
+                    mark(q, &mut try_cells);
+                }
+            }
+        }
+    }
+    for pos in board.candidates() {
+        if board.p4(pos, us) >= Pattern4::EBlock4 {
+            mark(pos, &mut try_cells);
+        }
+    }
+
+    let forbid = forbids(board);
+    for &pos in &try_cells {
+        let score = move_score(board, pos, us, values);
+        if board.p4(pos, us) >= Pattern4::EBlock4 {
+            moves.push(ScoredMove { pos, score });
+            continue;
+        }
+        if forbid && board.is_forbidden(pos) {
+            continue;
+        }
+        board.play(pos);
+        let stops = board.p4_count(them, Pattern4::CBlock4Flex3) == 0 && board.p4_count(them, Pattern4::BFlex4) == 0;
+        board.undo();
+        if stops {
+            moves.push(ScoredMove { pos, score });
+        }
+    }
+    // Only our fours and no defence: the caller searches every move.
+    if moves.iter().all(|m| board.p4(m.pos, us) >= Pattern4::EBlock4) {
+        moves.clear();
     }
 }
 
