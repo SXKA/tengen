@@ -102,7 +102,38 @@ pub struct Weights {
     /// Room to make five, which line patterns alone do not see across the
     /// board.
     pub window: Vec<i32>,
+    /// Move-ordering correction for the combination a move makes for the
+    /// mover and the one it takes from the opponent, together, by the
+    /// position's [`PolicyContext`]: `[context][own][opponent]`
+    /// ([`POLICY_CROSS_LEN`] in all), as in Rapfi's classical policy.
+    pub policy_cross: Vec<i32>,
 }
+
+/// What the position demands, for the move-ordering cross table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PolicyContext {
+    /// The opponent can make an open four.
+    OpponentFlexFour = 0,
+    /// The opponent can make a four-three.
+    OpponentFourThree,
+    /// Both sides can make an open three or more.
+    MutualRace,
+    /// Only the side to move can make an open three or more.
+    SelfAttacking,
+    /// Only the opponent can make an open three or more.
+    OpponentAttacking,
+    /// Neither can.
+    Quiet,
+}
+
+impl PolicyContext {
+    /// Number of contexts.
+    pub const COUNT: usize = 6;
+}
+
+/// Entries of [`Weights::policy_cross`].
+pub const POLICY_CROSS_LEN: usize = PolicyContext::COUNT * Pattern4::COUNT * Pattern4::COUNT;
 
 /// Open-window counts the window term weighs: windows holding 1 to 4 stones.
 pub const WINDOW_KINDS: usize = 4;
@@ -210,6 +241,7 @@ impl Factored {
             policy_own,
             policy_opp,
             window: vec![0; WINDOW_WEIGHTS],
+            policy_cross: vec![0; POLICY_CROSS_LEN],
         }
     }
 }
@@ -239,6 +271,7 @@ impl Weights {
         let mut policy_own = None;
         let mut policy_opp = None;
         let mut window = None;
+        let mut policy_cross = None;
         for line in text
             .lines()
             .map(str::trim)
@@ -261,6 +294,7 @@ impl Weights {
                 "policy_own" => (&mut policy_own, PCODE_COUNT),
                 "policy_opp" => (&mut policy_opp, PCODE_COUNT),
                 "window" => (&mut window, WINDOW_WEIGHTS),
+                "policy_cross" => (&mut policy_cross, POLICY_CROSS_LEN),
                 _ => return Err(format!("unknown table {name}")),
             };
             if values.len() != len {
@@ -276,6 +310,7 @@ impl Weights {
             policy_own: policy_own.unwrap_or(default_own),
             policy_opp: policy_opp.unwrap_or(default_opp),
             window: window.unwrap_or_else(|| vec![0; WINDOW_WEIGHTS]),
+            policy_cross: policy_cross.unwrap_or_else(|| vec![0; POLICY_CROSS_LEN]),
             pcode,
         })
     }
@@ -291,6 +326,7 @@ impl std::fmt::Display for Weights {
             ("policy_own", &self.policy_own),
             ("policy_opp", &self.policy_opp),
             ("window", &self.window),
+            ("policy_cross", &self.policy_cross),
         ] {
             let values: Vec<String> = table.iter().map(i32::to_string).collect();
             writeln!(f, "{name} {}", values.join(" "))?;
@@ -327,6 +363,9 @@ pub struct CellValues {
     policy_own: Box<[i32; PCODE_COUNT]>,
     policy_opp: Box<[i32; PCODE_COUNT]>,
     window: [i32; WINDOW_WEIGHTS],
+    policy_cross: Box<[i32; POLICY_CROSS_LEN]>,
+    /// Contexts in which some cross entry is not zero, one bit each.
+    cross_active: u8,
 }
 
 impl CellValues {
@@ -349,7 +388,37 @@ impl CellValues {
             policy_own: weights.policy_own.clone().try_into().expect("policy table size"),
             policy_opp: weights.policy_opp.clone().try_into().expect("policy table size"),
             window: weights.window.clone().try_into().expect("window table size"),
+            policy_cross: weights
+                .policy_cross
+                .clone()
+                .try_into()
+                .expect("policy cross table size"),
+            cross_active: weights
+                .policy_cross
+                .chunks(Pattern4::COUNT * Pattern4::COUNT)
+                .enumerate()
+                .filter(|(_, c)| c.iter().any(|&v| v != 0))
+                .fold(0, |mask, (i, _)| mask | 1 << i),
         }
+    }
+
+    /// Whether the cross table has any entry for `context`.
+    #[inline]
+    pub fn cross_active(&self, context: PolicyContext) -> bool {
+        self.cross_active & (1 << context as u8) != 0
+    }
+
+    /// Whether the cross table has any entry at all.
+    #[inline]
+    pub fn has_cross(&self) -> bool {
+        self.cross_active != 0
+    }
+
+    /// Cross-table correction for a move making `own` for the mover and
+    /// taking `opp` from the opponent, in `context`.
+    #[inline]
+    pub fn policy_cross(&self, context: PolicyContext, own: Pattern4, opp: Pattern4) -> i32 {
+        self.policy_cross[(context as usize * Pattern4::COUNT + own as usize) * Pattern4::COUNT + opp as usize]
     }
 
     /// Move-ordering score of a cell with the mover's code `own` and the

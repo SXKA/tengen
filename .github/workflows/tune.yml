@@ -43,9 +43,9 @@ on:
         type: boolean
         default: false
       mode:
-        description: Fit every table, refine the current evaluation tables (local; local-strong stays closer), or refit only the threat or move-ordering tables
+        description: Fit every table, refine the current evaluation tables (local; local-strong stays closer), refit only the threat or move-ordering tables, or learn the move-ordering cross table (policy-cross)
         type: choice
-        options: [full, local, local-strong, threat, window, window-space, policy]
+        options: [full, local, local-strong, threat, window, window-space, policy, policy-cross]
         default: full
       relabel:
         description: With a teacher and an earlier run, label its games again instead of reusing its labels
@@ -220,6 +220,8 @@ jobs:
             [ "${{ inputs.mode }}" = window-space ] && kinds=2
             artifacts/tengen-tune fit-window --data games.txt --lambda ${{ inputs.lambda }} --weights "$current" \
               --kinds $kinds --rule "$rule" --out weights.txt 2>&1 | tee fit.log
+          elif [ "${{ inputs.mode }}" = policy-cross ]; then
+            artifacts/tengen-tune fit-cross --data games.txt --weights "$current" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = policy ]; then
             artifacts/tengen-tune fit-policy --data games.txt --weights "$current" --out weights.txt 2>&1 | tee fit.log
           elif [ "${{ inputs.mode }}" = threat ]; then

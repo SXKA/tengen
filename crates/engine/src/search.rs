@@ -633,7 +633,7 @@ impl<'a> Worker<'a> {
                     .candidates()
                     .map(|pos| ScoredMove {
                         pos,
-                        score: movegen::move_score(&self.board, pos, us, values),
+                        score: movegen::move_score(&self.board, pos, us, values, None),
                     })
                     .collect();
                 list.retain(|m| self.board.is_legal(m.pos));
