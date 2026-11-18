@@ -992,6 +992,10 @@ impl<'a> Worker<'a> {
             let pos = m.pos;
             let tactical =
                 forced || self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, them) >= Pattern4::HFlex3;
+            // Fours and blocks of fours are never reduced; threes are, a ply
+            // less than quiet moves (Rapfi reduces every move).
+            let four =
+                forced || self.board.p4(pos, us) >= Pattern4::EBlock4 || self.board.p4(pos, them) >= Pattern4::EBlock4;
 
             // Rapfi's move-count pruning also drops late threes; only fours
             // and forced replies are kept.
@@ -1028,11 +1032,12 @@ impl<'a> Worker<'a> {
                 };
             } else {
                 let mut r = 0;
-                if depth >= 3 && !tactical {
+                if depth >= 3 && !four {
                     r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
                     r += cut_node as i32;
                     r -= PV as i32 + improving as i32;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
+                    r -= tactical as i32;
                     r = r.clamp(0, new_depth - 1);
                 }
                 v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);
