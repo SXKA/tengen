@@ -979,7 +979,9 @@ impl<'a> Worker<'a> {
         let mut best_move = None;
         let mut quiets = [Pos::NONE; 32];
         let mut quiet_count = 0;
-        let lmp_limit = (self.p.lmp_base + depth * depth) / (2 - improving as i32);
+        // Rapfi's move-count pruning: the limit grows as depth^1.3, so it
+        // keeps pruning at every depth, not only near the leaves.
+        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(1.3) as i32) / (2 - improving as i32);
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
@@ -991,11 +993,18 @@ impl<'a> Worker<'a> {
             let tactical =
                 forced || self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, them) >= Pattern4::HFlex3;
 
+            // Rapfi's move-count pruning also drops late threes; only fours
+            // and forced replies are kept.
+            if !PV
+                && !in_threat
+                && !forced
+                && best > -MATE_BOUND
+                && move_count > lmp_limit
+                && self.board.p4(pos, us) < Pattern4::EBlock4
+            {
+                continue;
+            }
             if !PV && !in_threat && !tactical && best > -MATE_BOUND && move_count > 1 {
-                // Late move pruning.
-                if move_count > lmp_limit {
-                    continue;
-                }
                 // Futility pruning of quiet moves near the leaves.
                 let p = &self.p;
                 if depth <= p.futility_depth
