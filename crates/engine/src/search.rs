@@ -1024,8 +1024,8 @@ impl<'a> Worker<'a> {
 
             // Rapfi's move-count pruning also drops late threes; only fours
             // and forced replies are kept.
-            if !PV
-                && !in_threat
+            // Rapfi prunes by move count at PV nodes too (not the root).
+            if !in_threat
                 && !forced
                 && best > -MATE_BOUND
                 && move_count > lmp_limit
