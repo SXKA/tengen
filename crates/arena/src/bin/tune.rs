@@ -53,7 +53,8 @@ const USAGE: &str = "usage:
                        [--rule freestyle] [--seed 1] [--threads N] --out FILE
   tengen-tune fit --data FILE[,FILE...] [--epochs 2000] [--per-code] [--lambda 1] --out FILE
   tengen-tune fit-threat --data FILE[,FILE...] [--weights FILE] [--lambda 1] --out FILE
-  tengen-tune fit-window --data FILE[,FILE...] [--weights FILE] [--epochs 300] [--lambda 1] --out FILE
+  tengen-tune fit-window --data FILE[,FILE...] [--weights FILE] [--epochs 300] [--lambda 1] [--kinds 4]
+                         --out FILE
   tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
                         [--l2 1e-6,1e-7,1e-8] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
@@ -152,7 +153,8 @@ fn main() {
             let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
             let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
             let epochs = number("--epochs", 300) as usize;
-            let tuned = fit_window(&data.split(',').collect::<Vec<_>>(), &weights, epochs, lambda);
+            let kinds = (number("--kinds", WINDOW_KINDS as u64) as usize).clamp(1, WINDOW_KINDS);
+            let tuned = fit_window(&data.split(',').collect::<Vec<_>>(), &weights, epochs, lambda, kinds);
             std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
         }
         Some("fit-threat") => {
@@ -851,8 +853,11 @@ fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, stre
 
 /// Fit the open-window weights on top of `weights`, every other table kept:
 /// a logistic fit of eight numbers (early and late, windows with one to
-/// four stones) to the residual of the current evaluation.
-fn fit_window(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> Weights {
+/// four stones) to the residual of the current evaluation. Only windows
+/// with up to `kinds` stones are fitted; the others keep their weights
+/// (`--kinds 2`: room to grow only, leaving threes and fours to the
+/// patterns).
+fn fit_window(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, kinds: usize) -> Weights {
     let (mut train, mut valid) = load(paths);
     if train.is_empty() || valid.is_empty() {
         fail("not enough positions to fit");
@@ -906,6 +911,9 @@ fn fit_window(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64) -> 
             }
         }
         for i in 0..WINDOW_WEIGHTS {
+            if i % WINDOW_KINDS >= kinds {
+                continue;
+            }
             let gi = grad[i] / train.len() as f64;
             m[i] = b1 * m[i] + (1.0 - b1) * gi;
             v[i] = b2 * v[i] + (1.0 - b2) * gi * gi;
