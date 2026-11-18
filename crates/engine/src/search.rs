@@ -935,7 +935,7 @@ impl<'a> Worker<'a> {
         }
 
         // Internal iterative reduction: no move to try first, search less.
-        let depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() {
+        let mut depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() {
             depth - 1
         } else {
             depth
@@ -1070,6 +1070,11 @@ impl<'a> Worker<'a> {
                         break;
                     }
                     alpha = v;
+                    // Once a move has raised alpha, the rest are searched a
+                    // ply shallower, as in Rapfi.
+                    if depth > 2 && depth < 12 && v.abs() < MATE_BOUND {
+                        depth -= 1;
+                    }
                 }
             }
             if !tactical && quiet_count < quiets.len() {
