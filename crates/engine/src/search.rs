@@ -155,7 +155,7 @@ impl Limits {
         let ample = turn_ms > 0.0 && turn_ms * moves_to_go.min(64.0) < time_left_ms;
         let mut optimum = hard * 0.9;
         if !ample {
-            let by_match = time_left_ms / moves_to_go.min(22.0);
+            let by_match = time_left_ms / moves_to_go.min(16.0);
             let by_turn = hard / 1.7 * move_importance(ply);
             optimum = optimum.min(by_match).min(by_turn);
         }
