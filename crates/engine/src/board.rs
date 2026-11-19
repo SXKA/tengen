@@ -538,17 +538,19 @@ impl Board {
     }
 
     /// What `color` would form on the empty `f` if its opponent also held
-    /// the empty `q`, without playing it. `None` with the large tables
-    /// (every rule but freestyle), where the move must be played to know.
+    /// the empty `q`, without playing it. `None` for Black under renju
+    /// rules, where a stone can lift a forbidden point and the move must be
+    /// played to know.
     #[inline]
     pub fn p4_if_opponent_at(&self, f: Pos, color: Color, q: Pos) -> Option<Pattern4> {
-        if self.large.is_some() {
+        if self.renju && color == Color::Black {
             return None;
         }
+        let reach = if self.large.is_some() { 5 } else { 4 };
         let dx = q.x() as i32 - f.x() as i32;
         let dy = q.y() as i32 - f.y() as i32;
         let d = dx.abs().max(dy.abs());
-        let dir = if d == 0 || d > 4 {
+        let dir = if d == 0 || d > reach {
             None
         } else if dy == 0 {
             Some(0)
@@ -568,13 +570,24 @@ impl Board {
         let (line, at) = self.line_of(f, dir);
         let (_, at_q) = self.line_of(q, dir);
         let c = color.index();
-        let own = self.lines[c][dir][line] >> (at + 1);
-        let blocked =
-            (self.lines[1 - c][dir][line] | 1u32 << (at_q + PAD) | self.edges[dir][line] | self.walls[dir][line])
-                >> (at + 1);
-        let mut patterns = self.cells[slot(f)].pattern[c];
-        patterns[dir] = tables.line(own, blocked);
-        Some(tables.pattern4(tables.pcode(patterns)))
+        let own = self.lines[c][dir][line] >> at;
+        let other = (self.lines[1 - c][dir][line] | 1u32 << (at_q + PAD)) >> at;
+        let edge = self.edges[dir][line] >> at;
+        let block = edge | (self.walls[dir][line] >> at);
+        let cell = &self.cells[slot(f)];
+        let mut patterns = cell.pattern[c];
+        match self.large {
+            None => {
+                patterns[dir] = tables.line(own >> 1, (other | block) >> 1);
+                Some(tables.pattern4(tables.pcode(patterns)))
+            }
+            Some(large) => {
+                let entry = large[c].entry(own | edge, other | block);
+                patterns[dir] = PATTERN_OF[(entry & 0x0f) as usize];
+                let flags = (cell.flags[c] & !(1 << dir)) | ((entry & LINE_FORBIDDEN != 0) as u8) << dir;
+                Some(self.combine(c, tables.pcode(patterns), flags, tables))
+            }
+        }
     }
 
     /// Pattern code of `pos` for `color`.
@@ -1356,40 +1369,62 @@ pub(crate) mod tests {
     #[test]
     fn p4_if_opponent_at_matches_playing_the_stone() {
         let mut rng = Rng::new(0x5eed_f00d);
-        for _ in 0..40 {
-            let mut board = Board::new(15);
-            board.play(board.center());
-            for _ in 0..(10 + rng.below(30)) {
-                let empty: Vec<Pos> = board.candidates().collect();
-                if empty.is_empty() || board.p4_count(board.side_to_move(), Pattern4::AFive) > 0 {
-                    break;
-                }
-                board.play(empty[rng.below(empty.len())]);
-                if board.p4_count(board.side_to_move().opponent(), Pattern4::AFive) > 0 {
-                    break;
-                }
-            }
-            let us = board.side_to_move();
-            let them = us.opponent();
-            let cells: Vec<Pos> = board.candidates().collect();
-            for &q in &cells {
-                board.play(q);
-                for &f in &cells {
-                    if f == q {
+        let mut checked = [0usize; 3];
+        for (r, rule) in [Rule::Freestyle, Rule::Standard, Rule::Renju].into_iter().enumerate() {
+            for _ in 0..30 {
+                let mut board = Board::with_rule(15, rule);
+                board.play(board.center());
+                for _ in 0..(10 + rng.below(30)) {
+                    let empty: Vec<Pos> = board.candidates().collect();
+                    if empty.is_empty() || board.p4_count(board.side_to_move(), Pattern4::AFive) > 0 {
+                        break;
+                    }
+                    let pos = empty[rng.below(empty.len())];
+                    if board.side_to_move() == Color::Black && board.is_forbidden(pos) {
                         continue;
                     }
-                    let after = board.p4(f, them);
-                    board.undo();
-                    assert_eq!(
-                        board.p4_if_opponent_at(f, them, q),
-                        Some(after),
-                        "f {f:?} q {q:?}\n{board}"
-                    );
-                    board.play(q);
+                    board.play(pos);
+                    if board.p4_count(board.side_to_move().opponent(), Pattern4::AFive) > 0 {
+                        break;
+                    }
                 }
-                board.undo();
+                for them in [Color::Black, Color::White] {
+                    // The stone on `q` is the opponent's of `them`.
+                    let passed = board.side_to_move() == them;
+                    if passed {
+                        board.pass();
+                    }
+                    let cells: Vec<Pos> = board.candidates().collect();
+                    for &q in &cells {
+                        let before: Vec<Pattern4> = cells.iter().map(|&f| board.p4(f, them)).collect();
+                        board.play(q);
+                        let after: Vec<Pattern4> = cells.iter().map(|&f| board.p4(f, them)).collect();
+                        board.undo();
+                        for (k, &f) in cells.iter().enumerate() {
+                            if f == q {
+                                continue;
+                            }
+                            match board.p4_if_opponent_at(f, them, q) {
+                                Some(p4) => {
+                                    checked[r] += 1;
+                                    assert_eq!(p4, after[k], "{rule:?} f {f:?} q {q:?}\n{board}");
+                                    // Only taking away: no new threat appears.
+                                    assert!(after[k] <= before[k], "{rule:?} f {f:?} q {q:?}\n{board}");
+                                }
+                                None => assert!(rule == Rule::Renju && them == Color::Black),
+                            }
+                        }
+                    }
+                    if passed {
+                        board.undo_pass();
+                    }
+                }
             }
         }
+        assert!(
+            checked.iter().all(|&n| n > 100_000),
+            "too few cells checked: {checked:?}"
+        );
     }
 
     /// Rebuild a board from scratch by replaying its moves.
