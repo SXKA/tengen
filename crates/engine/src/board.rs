@@ -1298,7 +1298,11 @@ pub(crate) mod tests {
                     }
                     let after = board.p4(f, them);
                     board.undo();
-                    assert_eq!(board.p4_if_opponent_at(f, them, q), Some(after), "f {f:?} q {q:?}\n{board}");
+                    assert_eq!(
+                        board.p4_if_opponent_at(f, them, q),
+                        Some(after),
+                        "f {f:?} q {q:?}\n{board}"
+                    );
                     board.play(q);
                 }
                 board.undo();
