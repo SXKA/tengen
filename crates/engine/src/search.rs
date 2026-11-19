@@ -55,6 +55,16 @@ fn value_to_tt(v: Value, ply: usize) -> Value {
     }
 }
 
+/// Whether `pos` is within two cells of `last`, or four along one of its
+/// lines (Rapfi's RANGE_SQUARE2_LINE4).
+#[inline]
+fn near_last(pos: Pos, last: Pos) -> bool {
+    let dx = (pos.x() as i32 - last.x() as i32).abs();
+    let dy = (pos.y() as i32 - last.y() as i32).abs();
+    let d = dx.max(dy);
+    d <= 2 || (d <= 4 && (dx == 0 || dy == 0 || dx == dy))
+}
+
 fn value_from_tt(v: Value, ply: usize) -> Value {
     if v >= MATE_BOUND {
         v - ply as Value
@@ -1226,6 +1236,11 @@ impl<'a> Worker<'a> {
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         movegen::generate_fours(&mut self.board, &mut list);
+        // Rapfi's quiescent VCF only continues next to the attacker's own
+        // last move: within two cells, or four along a line.
+        if let Some(last) = self.board.recent_move(1) {
+            list.retain(|m| near_last(m.pos, last));
+        }
         if let Some(tt_move) = tte.and_then(|e| e.best_move)
             && let Some(i) = list.iter().position(|m| m.pos == tt_move)
         {
