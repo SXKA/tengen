@@ -19,6 +19,7 @@ use crate::board::{Board, CELLS, Color, Pos};
 use crate::eval::{self, Value};
 use crate::movegen::{self, Gen, ScoredMove};
 use crate::pattern::Pattern4;
+use crate::rule::Rule;
 use crate::tt::{Bound, TranspositionTable, TtEntry};
 
 /// Score of a win on the next ply.
@@ -63,6 +64,14 @@ fn near_last(pos: Pos, last: Pos) -> bool {
     let dy = (pos.y() as i32 - last.y() as i32).abs();
     let d = dx.max(dy);
     d <= 2 || (d <= 4 && (dx == 0 || dy == 0 || dx == dy))
+}
+
+/// Chebyshev distance between two cells.
+#[inline]
+fn chebyshev(a: Pos, b: Pos) -> i32 {
+    (a.x() as i32 - b.x() as i32)
+        .abs()
+        .max((a.y() as i32 - b.y() as i32).abs())
 }
 
 fn value_from_tt(v: Value, ply: usize) -> Value {
@@ -1026,6 +1035,7 @@ impl<'a> Worker<'a> {
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
+        let distract_self = if self.board.rule() == Rule::Renju { 5 } else { 4 };
         let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + self.p.fail_high_margin * depth;
 
         for (index, m) in list.iter().enumerate() {
@@ -1043,6 +1053,20 @@ impl<'a> Worker<'a> {
             // Rapfi prunes by move count at PV nodes too (not the root).
             // Fours too, as in Rapfi.
             if !in_threat && !forced && best > -MATE_BOUND && move_count > lmp_limit {
+                continue;
+            }
+            // Rapfi: against an open four, near the leaves, a move that does
+            // not block it and is far from both last moves only delays.
+            if in_threat
+                && depth <= 4
+                && best > -MATE_BOUND
+                && self.board.p4(pos, them) < Pattern4::EBlock4
+                && self.board.recent_move(0).is_some_and(|m| chebyshev(pos, m) > 4)
+                && self
+                    .board
+                    .recent_move(1)
+                    .is_some_and(|m| chebyshev(pos, m) > distract_self)
+            {
                 continue;
             }
             if !PV && !in_threat && !tactical && best > -MATE_BOUND && move_count > 1 {
