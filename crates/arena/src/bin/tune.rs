@@ -1145,6 +1145,8 @@ fn fit(paths: &[&str], epochs: usize, per_code: bool, lambda: f64) -> Weights {
             policy_opp,
             window: vec![0; WINDOW_WEIGHTS],
             policy_cross: vec![0; POLICY_CROSS_LEN],
+            blend: eval::PLAIN_BLEND.to_vec(),
+            readout: eval::READOUT_KNOTS.to_vec(),
         };
         let valid_loss = loss(&codes, &valid, &as_params(&weights));
         eprintln!(

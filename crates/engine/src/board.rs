@@ -704,6 +704,16 @@ impl Board {
         self.value[color.index()]
     }
 
+    /// Sums of empty-cell values for `color`, with the early- and the
+    /// late-game table, before the last move (now if no move was played).
+    #[inline]
+    pub fn previous_pattern_values(&self, color: Color) -> (i32, i32) {
+        match self.history.last() {
+            Some(undo) => (undo.value[color.index()], undo.value_late[color.index()]),
+            None => (self.value[color.index()], self.value_late[color.index()]),
+        }
+    }
+
     /// Sum of empty-cell values for `color` with the late-game table.
     #[inline]
     pub fn pattern_value_late(&self, color: Color) -> i32 {
