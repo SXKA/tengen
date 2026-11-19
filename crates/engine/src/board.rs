@@ -465,6 +465,12 @@ impl Board {
         self.hash
     }
 
+    /// [`Board::hash`] after the side to move plays `pos`.
+    #[inline]
+    pub fn hash_after(&self, pos: Pos) -> u64 {
+        self.hash ^ zobrist().stone[self.side_to_move().index()][pos.index()] ^ zobrist().side
+    }
+
     /// Whether `pos` is on the board.
     #[inline]
     pub fn contains(&self, pos: Pos) -> bool {

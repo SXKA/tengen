@@ -868,6 +868,7 @@ impl<'a> Worker<'a> {
             let tactical =
                 self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, us.opponent()) >= Pattern4::HFlex3;
             self.nodes += 1;
+            self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let v = if i == 0 {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
@@ -1154,6 +1155,7 @@ impl<'a> Worker<'a> {
             let fail_high_reduction = (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32;
             let new_depth = depth - 1 + extension - fail_high_reduction;
 
+            self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let mut v;
             if move_count == 1 {
@@ -1293,6 +1295,7 @@ impl<'a> Worker<'a> {
             if us == Color::Black && self.board.is_forbidden(block) {
                 return mated_in(ply + 2);
             }
+            self.shared.tt.prefetch(self.board.hash_after(block));
             self.board.play(block);
             let v = -self.qsearch(-beta, -alpha, ply + 1, qply + 1);
             self.board.undo();
@@ -1350,6 +1353,7 @@ impl<'a> Worker<'a> {
         let mut best_move = None;
         for m in list.iter() {
             self.q_p4[ply] = self.board.p4(m.pos, us);
+            self.shared.tt.prefetch(self.board.hash_after(m.pos));
             self.board.play(m.pos);
             let v = -self.qsearch(-beta, -alpha, ply + 1, qply + 1);
             self.board.undo();
