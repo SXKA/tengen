@@ -166,6 +166,20 @@ fn fallback(board: &mut Board, moves: &mut Vec<ScoredMove>) {
 
 /// Moves against an opponent who can make an open four: our own fours, and
 /// cells after which no open-four point remains.
+/// Whether a stone on `pos` leaves `them` no point of `threat` or better
+/// among `points` (every such point on the board), worked out without
+/// playing it; `None` when the board cannot (see
+/// [`Board::p4_if_opponent_at`]).
+#[inline]
+fn stops_all(board: &Board, points: &[Pos], them: Color, pos: Pos, threat: Pattern4) -> Option<bool> {
+    for &f in points {
+        if f != pos && board.p4_if_opponent_at(f, them, pos)? >= threat {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
 fn generate_defences(
     board: &mut Board,
     moves: &mut Vec<ScoredMove>,
@@ -186,10 +200,12 @@ fn generate_defences(
             out.push(pos);
         }
     };
+    let mut points = Vec::with_capacity(8);
     for point in board.area_cells() {
         if !board.is_empty(point) || board.p4(point, them) != Pattern4::BFlex4 {
             continue;
         }
+        points.push(point);
         mark(point, &mut try_cells);
         for dir in 0..4 {
             if board.pattern(point, them, dir) < Pattern::B4 {
@@ -222,9 +238,14 @@ fn generate_defences(
         if forbid && board.is_forbidden(pos) {
             continue;
         }
-        board.play(pos);
-        let stops = board.p4_count(them, Pattern4::BFlex4) == 0;
-        board.undo();
+        // Our stone only takes from the opponent: it stops the open four if
+        // none of its points is still one.
+        let stops = stops_all(board, &points, them, pos, Pattern4::BFlex4).unwrap_or_else(|| {
+            board.play(pos);
+            let stops = board.p4_count(them, Pattern4::BFlex4) == 0;
+            board.undo();
+            stops
+        });
         if stops {
             moves.push(ScoredMove { pos, score });
         }
@@ -251,10 +272,12 @@ fn generate_four_three_defences(
             out.push(pos);
         }
     };
+    let mut points = Vec::with_capacity(8);
     for point in board.area_cells() {
         if !board.is_empty(point) || board.p4(point, them) != Pattern4::CBlock4Flex3 {
             continue;
         }
+        points.push(point);
         mark(point, &mut try_cells);
         for dir in 0..4 {
             if board.pattern(point, them, dir) < Pattern::B3 {
@@ -285,9 +308,13 @@ fn generate_four_three_defences(
         if forbid && board.is_forbidden(pos) {
             continue;
         }
-        board.play(pos);
-        let stops = board.p4_count(them, Pattern4::CBlock4Flex3) == 0 && board.p4_count(them, Pattern4::BFlex4) == 0;
-        board.undo();
+        let stops = stops_all(board, &points, them, pos, Pattern4::CBlock4Flex3).unwrap_or_else(|| {
+            board.play(pos);
+            let stops =
+                board.p4_count(them, Pattern4::CBlock4Flex3) == 0 && board.p4_count(them, Pattern4::BFlex4) == 0;
+            board.undo();
+            stops
+        });
         if stops {
             moves.push(ScoredMove { pos, score });
         }
