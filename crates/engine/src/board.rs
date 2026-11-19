@@ -167,6 +167,33 @@ impl Iterator for AreaCells {
     }
 }
 
+/// Iterator of [`Board::candidates`].
+pub struct Candidates<'a> {
+    cand: &'a [u32; MAX_SIZE],
+    y: usize,
+    y1: usize,
+    xmask: u32,
+    row: u32,
+}
+
+impl Iterator for Candidates<'_> {
+    type Item = Pos;
+
+    #[inline]
+    fn next(&mut self) -> Option<Pos> {
+        while self.row == 0 {
+            if self.y >= self.y1 {
+                return None;
+            }
+            self.y += 1;
+            self.row = self.cand[self.y] & self.xmask;
+        }
+        let x = self.row.trailing_zeros() as usize;
+        self.row &= self.row - 1;
+        Some(Pos::new(x, self.y))
+    }
+}
+
 /// Stone codes of [`Cell::stone`].
 const EMPTY: u8 = 0;
 const BLACK: u8 = 1;
@@ -190,8 +217,6 @@ const PATTERN_OF: [Pattern; 16] = {
 struct Cell {
     /// 0 empty, 1 black, 2 white, 3 a stone of neither (continuous games).
     stone: u8,
-    /// Number of stones within candidate range.
-    near: u8,
     /// Pattern code per color.
     pcode: [PatternCode; 2],
     /// Pattern combination per color.
@@ -205,7 +230,6 @@ struct Cell {
 
 const EMPTY_CELL: Cell = Cell {
     stone: EMPTY,
-    near: 0,
     pcode: [0; 2],
     p4: [Pattern4::None; 2],
     pattern: [[Pattern::Dead; 4]; 2],
@@ -247,6 +271,8 @@ struct Undo {
     value_late: [i32; 2],
     p4_count: [[u16; Pattern4::COUNT]; 2],
     windows: [[i16; 6]; 2],
+    /// Candidate rows `pos.y - 3 ..= pos.y + 3` before the move.
+    cand_rows: [u32; 7],
 }
 
 /// Zobrist keys, derived deterministically so every board agrees.
@@ -316,6 +342,9 @@ pub struct Board {
     /// undoing a move copies them back instead of recomputing patterns.
     journal: Vec<(u16, Cell)>,
     area: Area,
+    /// Candidate cells ([`Board::is_candidate`]), one bit per column, by
+    /// row: kept with each move so listing them skips the scan.
+    cand: [u32; MAX_SIZE],
     hash: u64,
     /// Sum of [`eval::CellValues`] over empty cells, per color.
     value: [i32; 2],
@@ -360,6 +389,7 @@ impl Board {
             history: Vec::with_capacity(size * size),
             journal: Vec::with_capacity(40 * size * size),
             area: Area::empty(),
+            cand: [0; MAX_SIZE],
             hash: zobrist().rule[rule.index()],
             value: [0; 2],
             value_late: [0; 2],
@@ -467,8 +497,7 @@ impl Board {
     /// Whether `pos` is empty and close enough to a stone to be worth playing.
     #[inline]
     pub fn is_candidate(&self, pos: Pos) -> bool {
-        let cell = &self.cells[slot(pos)];
-        cell.stone == 0 && cell.near > 0
+        pos.y() < MAX_SIZE && (self.cand[pos.y()] >> pos.x()) & 1 == 1
     }
 
     /// Moves played so far, oldest first.
@@ -682,8 +711,55 @@ impl Board {
     }
 
     /// Empty cells near stones, row by row.
-    pub fn candidates(&self) -> impl Iterator<Item = Pos> + '_ {
-        self.area_cells().filter(|&p| self.is_candidate(p))
+    pub fn candidates(&self) -> Candidates<'_> {
+        let a = self.area;
+        if a.y0 > a.y1 || a.x0 > a.x1 {
+            return Candidates {
+                cand: &self.cand,
+                y: 1,
+                y1: 0,
+                xmask: 0,
+                row: 0,
+            };
+        }
+        let xmask = ((1u64 << (a.x1 as u32 + 1)) - (1u64 << a.x0)) as u32;
+        Candidates {
+            cand: &self.cand,
+            y: a.y0 as usize,
+            y1: a.y1 as usize,
+            xmask,
+            row: self.cand[a.y0 as usize] & xmask,
+        }
+    }
+
+    /// After a stone on `pos`: every empty cell of its [`NEAR`] stencil is
+    /// now a candidate, and `pos` no longer is.
+    #[inline]
+    fn add_candidates(&mut self, pos: Pos) {
+        // NEAR as columns by row offset -3..=3, bit dx + 3.
+        const ROWS: [u64; 7] = {
+            let mut rows = [0u64; 7];
+            let mut i = 0;
+            while i < NEAR.len() {
+                let (dx, dy) = NEAR[i];
+                rows[(dy + 3) as usize] |= 1 << (dx + 3);
+                i += 1;
+            }
+            rows
+        };
+        let (px, py) = (pos.x(), pos.y() as isize);
+        let full = (1u64 << self.size) - 1;
+        for (i, &stencil) in ROWS.iter().enumerate() {
+            let y = py + i as isize - 3;
+            if !(0..self.size as isize).contains(&y) {
+                continue;
+            }
+            let y = y as usize;
+            let occupied = (self.lines[0][0][y] | self.lines[1][0][y] | self.walls[0][y]) as u64 >> PAD;
+            let mask = ((stencil << px) >> 3) & full & !occupied;
+            self.cand[y] |= mask as u32;
+        }
+        self.cand[pos.y()] &= !(1u32 << px);
     }
 
     /// The cell `k` steps from `pos` along `dir`, if on the board.
@@ -724,6 +800,18 @@ impl Board {
             value_late: self.value_late,
             p4_count: self.p4_count,
             windows: self.windows,
+            cand_rows: if pos == Pos::NONE {
+                [0; 7]
+            } else {
+                std::array::from_fn(|i| {
+                    let y = pos.y() as isize + i as isize - 3;
+                    if (0..self.size as isize).contains(&y) {
+                        self.cand[y as usize]
+                    } else {
+                        0
+                    }
+                })
+            },
         }
     }
 
@@ -734,8 +822,8 @@ impl Board {
         self.history.push(self.undo_record(pos));
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
         self.place::<true>(pos, color.index() as u8 + 1);
-        self.update_near(pos, 1);
         self.extend_area(pos);
+        self.add_candidates(pos);
     }
 
     /// Take back the last move: copy back the cells it changed and the
@@ -746,8 +834,6 @@ impl Board {
         let pos = undo.pos;
         let color = self.side_to_move();
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
-        // Near counts first: the journal holds them as they were.
-        self.update_near(pos, -1);
         while self.journal.len() > undo.journal_len as usize {
             let (i, cell) = self.journal.pop().expect("journal entry");
             self.cells[i as usize] = cell;
@@ -762,6 +848,12 @@ impl Board {
         self.p4_count = undo.p4_count;
         self.windows = undo.windows;
         self.area = undo.area;
+        for (i, &row) in undo.cand_rows.iter().enumerate() {
+            let y = pos.y() as isize + i as isize - 3;
+            if (0..self.size as isize).contains(&y) {
+                self.cand[y as usize] = row;
+            }
+        }
     }
 
     /// Put a stone of neither player on an empty cell. In a continuous game
@@ -773,6 +865,7 @@ impl Board {
         self.hash ^= zobrist().wall[pos.index()];
         self.set_stone(pos, WALL);
         self.walls_placed += 1;
+        self.cand[pos.y()] &= !(1u32 << pos.x());
     }
 
     /// Pass the turn without playing, for null-move style probes. Undo with
@@ -1147,17 +1240,6 @@ impl Board {
         }
     }
 
-    /// Count `delta` more stones near the cells around `pos`. Steps off the
-    /// board land on padding (columns past the side wrap into the padding
-    /// columns of the next or previous row), whose counts are never read.
-    fn update_near(&mut self, pos: Pos, delta: i8) {
-        let center = slot(pos) as isize;
-        for &(dx, dy) in NEAR.iter() {
-            let cell = &mut self.cells[(center + dy as isize * STRIDE as isize + dx as isize) as usize];
-            cell.near = cell.near.wrapping_add_signed(delta);
-        }
-    }
-
     fn extend_area(&mut self, pos: Pos) {
         let r = 3;
         let max = self.size - 1;
@@ -1336,6 +1418,16 @@ pub(crate) mod tests {
                     assert_eq!(patterns, board.cells[slot(p)].pattern, "{p:?}");
                     assert_eq!(flags, board.cells[slot(p)].flags, "{p:?}");
                 }
+            }
+        }
+        for y in 0..board.size {
+            for x in 0..board.size {
+                let p = Pos::new(x, y);
+                let near = board.moves().any(|m| {
+                    let (dx, dy) = (p.x() as i8 - m.x() as i8, p.y() as i8 - m.y() as i8);
+                    NEAR.contains(&(dx, dy))
+                });
+                assert_eq!(board.is_candidate(p), board.is_empty(p) && near, "candidate {p:?}");
             }
         }
         let mut recount = board.clone();
