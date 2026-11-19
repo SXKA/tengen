@@ -113,6 +113,9 @@ pub struct Limits {
     pub soft_ms: Option<f64>,
     /// Abort after this many milliseconds.
     pub hard_ms: Option<f64>,
+    /// Treat `soft_ms` as Rapfi's optimum time: stop earlier when the best
+    /// move is stable, later when it keeps changing or the value falls.
+    pub dynamic: bool,
 }
 
 impl Limits {
@@ -134,12 +137,12 @@ impl Limits {
     }
 
     /// Budget a move from a game clock: `time_left_ms` for the rest of the
-    /// game and at most `turn_ms` for this move (0 for no per-move cap).
-    pub fn for_clock(time_left_ms: f64, turn_ms: f64, empty_cells: usize) -> Limits {
-        // Assume the game lasts at most ~30 more of our moves, fewer when the
-        // board is nearly full.
-        let moves_left = (empty_cells / 2).clamp(5, 30) as f64;
-        let mut hard = (time_left_ms / moves_left * 2.5).min(time_left_ms * 0.4);
+    /// game and at most `turn_ms` for this move (0 for no per-move cap), as
+    /// Rapfi does: at most a seventh of the clock, and when the clock is
+    /// short an optimum of a 22nd of it, less as the game goes on.
+    pub fn for_clock(time_left_ms: f64, turn_ms: f64, empty_cells: usize, ply: usize) -> Limits {
+        let moves_to_go = empty_cells.max(1) as f64;
+        let mut hard = time_left_ms / moves_to_go.min(7.0);
         if turn_ms > 0.0 {
             hard = hard.min(turn_ms);
         }
@@ -149,13 +152,28 @@ impl Limits {
         // move, there is nothing to save time for: keep deepening until
         // most of the turn is used. An unfinished iteration still counts
         // when it finds a better move.
-        let ample = turn_ms > 0.0 && time_left_ms >= turn_ms * moves_left;
+        let ample = turn_ms > 0.0 && turn_ms * moves_to_go.min(64.0) < time_left_ms;
+        let mut optimum = hard * 0.9;
+        if !ample {
+            let by_match = time_left_ms / moves_to_go.min(22.0);
+            let by_turn = hard / 1.7 * move_importance(ply);
+            optimum = optimum.min(by_match).min(by_turn);
+        }
         Limits {
-            soft_ms: Some(hard * if ample { 0.9 } else { 0.4 }),
+            soft_ms: Some(optimum),
             hard_ms: Some(hard),
+            dynamic: !ample,
             ..Limits::default()
         }
     }
+}
+
+/// Rapfi's weight of a move by game ply: early moves get a little more.
+fn move_importance(ply: usize) -> f64 {
+    let ply = ply as f64;
+    let basic = (1.0 + ((ply - 50.0) / 8.0).exp()).powf(-0.08);
+    let opening = 0.1 * (-0.04 * ply).exp();
+    (basic + opening).max(0.01)
 }
 
 /// Progress report after each completed iteration.
@@ -211,6 +229,10 @@ pub struct Engine {
     threads: usize,
     clock: Clock,
     stop: Arc<AtomicBool>,
+    /// Rapfi's time reduction from the last move's best-move stability,
+    /// and that move's value, carried to the next move of the game.
+    time_reduction: f64,
+    last_value: Option<Value>,
 }
 
 impl Engine {
@@ -221,6 +243,8 @@ impl Engine {
             threads: 1,
             clock: default_clock,
             stop: Arc::new(AtomicBool::new(false)),
+            time_reduction: 1.0,
+            last_value: None,
         }
     }
 
@@ -251,6 +275,8 @@ impl Engine {
     /// Forget previous searches (new game).
     pub fn clear(&mut self) {
         self.tt.clear();
+        self.time_reduction = 1.0;
+        self.last_value = None;
     }
 
     /// A flag that stops the running search when set.
@@ -270,6 +296,8 @@ impl Engine {
             clock: self.clock,
             start: (self.clock)(),
             limits: limits.clone(),
+            prev_time: (self.time_reduction, self.last_value),
+            next_time: AtomicU64::new(1f64.to_bits()),
         });
 
         #[cfg(feature = "threads")]
@@ -311,6 +339,10 @@ impl Engine {
         ))]
         let result = Worker::new(&shared, 0, board.clone()).think(&mut on_info);
 
+        if shared.limits.dynamic {
+            self.time_reduction = f64::from_bits(shared.next_time.load(Relaxed));
+            self.last_value = Some(result.value);
+        }
         SearchResult {
             nodes: shared.nodes.load(Relaxed),
             ..result
@@ -409,6 +441,10 @@ struct Shared {
     clock: Clock,
     start: f64,
     limits: Limits,
+    /// Rapfi's time reduction and best value from the previous move, and
+    /// (set by the main thread) the new reduction, as `f64` bits.
+    prev_time: (f64, Option<Value>),
+    next_time: AtomicU64,
 }
 
 impl Shared {
@@ -579,6 +615,8 @@ struct Worker<'a> {
     /// move, the reply that last refuted it and the combination it made.
     counters: Box<[[(Pos, Pattern4); CELLS]; 2]>,
     killers: Vec<[Pos; 2]>,
+    /// Root moves that beat the first one, since the time check last read it.
+    best_changes: u32,
     /// The mover's combination at each quiescence move.
     q_p4: Vec<Pattern4>,
     evals: Vec<Value>,
@@ -604,6 +642,7 @@ impl<'a> Worker<'a> {
             attack_history: Box::new([[0; CELLS]; 2]),
             counters: Box::new([[(Pos::NONE, Pattern4::None); CELLS]; 2]),
             killers: vec![[Pos::NONE; 2]; plies],
+            best_changes: 0,
             q_p4: vec![Pattern4::None; plies],
             p: *params(),
             evals: vec![0; plies],
@@ -705,6 +744,12 @@ impl<'a> Worker<'a> {
         let mut completed = 0;
         let mut value: Value = 0;
         let mut best = self.root_moves[0].clone();
+        // Rapfi's time control: how much the best move has changed lately,
+        // and the depth at which it last changed.
+        let mut total_changes = 0.0f64;
+        let mut last_change_depth = 0;
+        let mut last_best = Pos::NONE;
+        let mut time_reduction = 1.0f64;
 
         for depth in 1..=max_depth {
             // Helpers skip ahead on odd ids so threads spread over depths.
@@ -715,6 +760,7 @@ impl<'a> Worker<'a> {
             };
             self.root_depth = search_depth;
             self.seldepth = 0;
+            total_changes *= 0.5;
 
             let mut delta = self.p.aspiration;
             let (mut alpha, mut beta) = if depth >= 4 && value.abs() < MATE_BOUND {
@@ -773,7 +819,28 @@ impl<'a> Worker<'a> {
                 pv: best.pv.clone(),
             });
             let proven = value.abs() >= MATE_BOUND && depth as Value >= (MATE - value.abs()) + 2;
-            let timed = limits.soft_ms.is_some_and(|s| elapsed >= s);
+            if best.pos != last_best {
+                last_best = best.pos;
+                last_change_depth = search_depth;
+            }
+            total_changes += std::mem::take(&mut self.best_changes) as f64;
+            let timed = match limits.soft_ms {
+                Some(optimum) if limits.dynamic => {
+                    let (prev_reduction, prev_value) = self.shared.prev_time;
+                    // More time when the value is falling, less when it holds.
+                    let dropped = prev_value.map_or(f64::INFINITY, |p| (p - value) as f64);
+                    let falling = (0.0032 * dropped + 0.544).clamp(0.5, 1.5);
+                    // Less time the longer the best move has stayed the same.
+                    time_reduction = 1.0 + 0.0125 * (search_depth - last_change_depth) as f64;
+                    let reduction = prev_reduction.powf(0.528) / time_reduction;
+                    let instability = 1.0 + 2.0 * total_changes;
+                    let hard = limits.hard_ms.unwrap_or(f64::INFINITY);
+                    let max_turn = hard / (1.25 + 0.02 * (search_depth as f64).powf(1.4));
+                    elapsed >= (optimum * instability * reduction * falling).min(max_turn)
+                }
+                Some(optimum) => elapsed >= optimum,
+                None => false,
+            };
             let only_move = self.root_moves.len() == 1 && (limits.soft_ms.is_some() || limits.hard_ms.is_some());
             if proven || timed || only_move {
                 break;
@@ -781,6 +848,7 @@ impl<'a> Worker<'a> {
         }
         if self.is_main() {
             self.shared.stop.store(true, Relaxed);
+            self.shared.next_time.store(time_reduction.to_bits(), Relaxed);
         }
         self.poll();
         SearchResult {
@@ -821,6 +889,9 @@ impl<'a> Worker<'a> {
             self.board.undo();
             if self.stopped() {
                 break;
+            }
+            if i > 0 && v > alpha {
+                self.best_changes += 1;
             }
             let rm = &mut self.root_moves[i];
             if i == 0 || v > alpha {

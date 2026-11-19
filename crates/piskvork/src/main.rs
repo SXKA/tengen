@@ -98,7 +98,7 @@ impl Brain {
         } else {
             100.0
         };
-        Limits::for_clock(left, turn, empty)
+        Limits::for_clock(left, turn, empty, board.ply())
     }
 
     fn apply_info(&mut self, key: &str, value: &str) {
