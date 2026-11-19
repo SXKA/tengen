@@ -55,6 +55,16 @@ fn value_to_tt(v: Value, ply: usize) -> Value {
     }
 }
 
+/// Whether `pos` is within two cells of `last`, or four along one of its
+/// lines (Rapfi's RANGE_SQUARE2_LINE4).
+#[inline]
+fn near_last(pos: Pos, last: Pos) -> bool {
+    let dx = (pos.x() as i32 - last.x() as i32).abs();
+    let dy = (pos.y() as i32 - last.y() as i32).abs();
+    let d = dx.max(dy);
+    d <= 2 || (d <= 4 && (dx == 0 || dy == 0 || dx == dy))
+}
+
 fn value_from_tt(v: Value, ply: usize) -> Value {
     if v >= MATE_BOUND {
         v - ply as Value
@@ -560,6 +570,8 @@ struct Worker<'a> {
     /// move, the reply that last refuted it and the combination it made.
     counters: Box<[[(Pos, Pattern4); CELLS]; 2]>,
     killers: Vec<[Pos; 2]>,
+    /// The mover's combination at each quiescence move.
+    q_p4: Vec<Pattern4>,
     evals: Vec<Value>,
     /// The search parameters, copied for quick access.
     p: Params,
@@ -583,6 +595,7 @@ impl<'a> Worker<'a> {
             attack_history: Box::new([[0; CELLS]; 2]),
             counters: Box::new([[(Pos::NONE, Pattern4::None); CELLS]; 2]),
             killers: vec![[Pos::NONE; 2]; plies],
+            q_p4: vec![Pattern4::None; plies],
             p: *params(),
             evals: vec![0; plies],
             pv: (0..plies).map(|_| Vec::with_capacity(32)).collect(),
@@ -1226,6 +1239,17 @@ impl<'a> Worker<'a> {
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         movegen::generate_fours(&mut self.board, &mut list);
+        // Rapfi's quiescent VCF only continues next to the attacker's own
+        // last move: within two cells, or four along a line.
+        if let Some(last) = self.board.recent_move(1) {
+            list.retain(|m| near_last(m.pos, last));
+        }
+        // After two fours, plain fours only follow two fours that each made
+        // more than a four; otherwise a four must come with more.
+        if qply >= 4 && (self.q_p4[ply - 2] < Pattern4::DBlock4Plus || self.q_p4[ply - 4] < Pattern4::DBlock4Plus) {
+            let board = &self.board;
+            list.retain(|m| board.p4(m.pos, us) >= Pattern4::DBlock4Plus);
+        }
         if let Some(tt_move) = tte.and_then(|e| e.best_move)
             && let Some(i) = list.iter().position(|m| m.pos == tt_move)
         {
@@ -1234,6 +1258,7 @@ impl<'a> Worker<'a> {
         let mut best = stand;
         let mut best_move = None;
         for m in list.iter() {
+            self.q_p4[ply] = self.board.p4(m.pos, us);
             self.board.play(m.pos);
             let v = -self.qsearch(-beta, -alpha, ply + 1, qply + 1);
             self.board.undo();
