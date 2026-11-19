@@ -107,6 +107,15 @@ pub struct Weights {
     /// position's [`PolicyContext`]: `[context][own][opponent]`
     /// ([`POLICY_CROSS_LEN`] in all), as in Rapfi's classical policy.
     pub policy_cross: Vec<i32>,
+    /// Weights, in [`BLEND_SCALE`]ths, of the pattern value now, the
+    /// pattern value before the last move (both from the side to move's
+    /// point of view) and the threat term, as in Rapfi's classical
+    /// evaluation; [`PLAIN_BLEND`] adds the current value and the threat.
+    pub blend: Vec<i32>,
+    /// Value curve applied last: the output at each of [`READOUT_KNOTS`],
+    /// in thousandths of [`SCALE`], linear in between and with slope one
+    /// beyond; odd. [`READOUT_KNOTS`] itself leaves values unchanged.
+    pub readout: Vec<i32>,
 }
 
 /// What the position demands, for the move-ordering cross table.
@@ -139,6 +148,16 @@ pub const POLICY_CROSS_LEN: usize = PolicyContext::COUNT * Pattern4::COUNT * Pat
 pub const WINDOW_KINDS: usize = 4;
 /// Entries of [`Weights::window`]: early, then late.
 pub const WINDOW_WEIGHTS: usize = 2 * WINDOW_KINDS;
+
+/// Denominator of [`Weights::blend`].
+pub const BLEND_SCALE: i32 = 256;
+
+/// The blend that leaves the evaluation as the plain sum of its terms.
+pub const PLAIN_BLEND: [i32; 3] = [BLEND_SCALE, 0, BLEND_SCALE];
+
+/// Where [`Weights::readout`] samples the evaluation, in thousandths of
+/// [`SCALE`].
+pub const READOUT_KNOTS: [i32; 6] = [0, 500, 1000, 2000, 4000, 8000];
 
 /// Default move-ordering bonus for what a move makes, by combination.
 pub const DEFAULT_ATTACK: [i32; Pattern4::COUNT] = [0, 0, 4, 3, 10, 12, 30, 45, 120, 20, 60, 400, 2000, 10000];
@@ -242,6 +261,8 @@ impl Factored {
             policy_opp,
             window: vec![0; WINDOW_WEIGHTS],
             policy_cross: vec![0; POLICY_CROSS_LEN],
+            blend: PLAIN_BLEND.to_vec(),
+            readout: READOUT_KNOTS.to_vec(),
         }
     }
 }
@@ -272,6 +293,8 @@ impl Weights {
         let mut policy_opp = None;
         let mut window = None;
         let mut policy_cross = None;
+        let mut blend = None;
+        let mut readout = None;
         for line in text
             .lines()
             .map(str::trim)
@@ -295,6 +318,8 @@ impl Weights {
                 "policy_opp" => (&mut policy_opp, PCODE_COUNT),
                 "window" => (&mut window, WINDOW_WEIGHTS),
                 "policy_cross" => (&mut policy_cross, POLICY_CROSS_LEN),
+                "blend" => (&mut blend, PLAIN_BLEND.len()),
+                "readout" => (&mut readout, READOUT_KNOTS.len()),
                 _ => return Err(format!("unknown table {name}")),
             };
             if values.len() != len {
@@ -311,6 +336,8 @@ impl Weights {
             policy_opp: policy_opp.unwrap_or(default_opp),
             window: window.unwrap_or_else(|| vec![0; WINDOW_WEIGHTS]),
             policy_cross: policy_cross.unwrap_or_else(|| vec![0; POLICY_CROSS_LEN]),
+            blend: blend.unwrap_or_else(|| PLAIN_BLEND.to_vec()),
+            readout: readout.unwrap_or_else(|| READOUT_KNOTS.to_vec()),
             pcode,
         })
     }
@@ -327,6 +354,8 @@ impl std::fmt::Display for Weights {
             ("policy_opp", &self.policy_opp),
             ("window", &self.window),
             ("policy_cross", &self.policy_cross),
+            ("blend", &self.blend),
+            ("readout", &self.readout),
         ] {
             let values: Vec<String> = table.iter().map(i32::to_string).collect();
             writeln!(f, "{name} {}", values.join(" "))?;
@@ -369,6 +398,10 @@ pub struct CellValues {
     /// Whether any window weight is not zero: the board counts open
     /// windows only then.
     window_active: bool,
+    /// [`Weights::blend`], or `None` for [`PLAIN_BLEND`].
+    blend: Option<[i32; 3]>,
+    /// [`Weights::readout`] in evaluation units, or `None` for no curve.
+    readout: Option<[i32; 6]>,
 }
 
 impl CellValues {
@@ -397,6 +430,11 @@ impl CellValues {
                 .try_into()
                 .expect("policy cross table size"),
             window_active: weights.window.iter().any(|&v| v != 0),
+            blend: (weights.blend != PLAIN_BLEND).then(|| weights.blend.clone().try_into().expect("blend size")),
+            readout: (weights.readout != READOUT_KNOTS).then(|| {
+                let unit = |k: i32| (k as f64 * SCALE / 1000.0).round() as i32;
+                std::array::from_fn(|i| unit(weights.readout[i]))
+            }),
             cross_active: weights
                 .policy_cross
                 .chunks(Pattern4::COUNT * Pattern4::COUNT)
@@ -476,6 +514,24 @@ pub fn threat_mask(board: &Board, us: Color) -> usize {
 /// Static evaluation from the side to move's point of view.
 #[inline]
 pub fn evaluate(board: &Board) -> Value {
+    let values = board.values();
+    let Some(weights) = values.blend else {
+        let (current, _, threat) = terms(board, false);
+        return current + threat;
+    };
+    let (current, previous, threat) = terms(board, true);
+    let value = (weights[0] * current + weights[1] * previous + weights[2] * threat) / BLEND_SCALE;
+    match &values.readout {
+        Some(knots) => read_out(value, knots),
+        None => value,
+    }
+}
+
+/// The evaluation's terms for the side to move: the pattern value now, the
+/// pattern value before the last move (zero unless `previous`) and the
+/// threat term.
+#[inline]
+fn terms(board: &Board, previous: bool) -> (i32, i32, i32) {
     let us = board.side_to_move();
     let them = us.opponent();
     let values = board.values();
@@ -488,7 +544,35 @@ pub fn evaluate(board: &Board) -> Value {
     }
     let early = board.pattern_value(us) - board.pattern_value(them) + window_early;
     let late = board.pattern_value_late(us) - board.pattern_value_late(them) + window_late;
-    blend(early, late, board.ply()) + values.threat[threat_mask(board, us)]
+    let threat = values.threat[threat_mask(board, us)];
+    let previous = if previous {
+        let ((us_early, us_late), (them_early, them_late)) =
+            (board.previous_pattern_values(us), board.previous_pattern_values(them));
+        blend(
+            us_early - them_early,
+            us_late - them_late,
+            board.ply().saturating_sub(1),
+        )
+    } else {
+        0
+    };
+    (blend(early, late, board.ply()), previous, threat)
+}
+
+/// Map `value` through the curve with outputs `knots` at [`READOUT_KNOTS`]
+/// (both in evaluation units): linear in between, slope one beyond, odd.
+fn read_out(value: i32, knots: &[i32; 6]) -> i32 {
+    let at = |k: i32| (k as f64 * SCALE / 1000.0).round() as i32;
+    let x = value.abs();
+    let last = READOUT_KNOTS.len() - 1;
+    let y = if x >= at(READOUT_KNOTS[last]) {
+        knots[last] + x - at(READOUT_KNOTS[last])
+    } else {
+        let hi = (1..=last).find(|&i| x <= at(READOUT_KNOTS[i])).unwrap_or(last);
+        let (x0, x1) = (at(READOUT_KNOTS[hi - 1]), at(READOUT_KNOTS[hi]));
+        knots[hi - 1] + (knots[hi] - knots[hi - 1]) * (x - x0) / (x1 - x0)
+    };
+    y * value.signum()
 }
 
 /// Mix early- and late-game values by the number of stones played.
@@ -582,7 +666,11 @@ mod tests {
         let mut board = Board::new(15);
         for (x, y) in [(7, 7), (8, 8), (7, 8), (6, 6), (8, 6), (9, 9), (6, 8), (0, 1)] {
             board.play(Pos::new(x, y));
-            assert_eq!(Features::of(&board).dot(&weights), evaluate(&board));
+            let (current, _, threat) = terms(&board, false);
+            assert_eq!(Features::of(&board).dot(&weights), current + threat);
+            if weights.blend == PLAIN_BLEND && weights.readout == READOUT_KNOTS {
+                assert_eq!(current + threat, evaluate(&board));
+            }
         }
     }
 
