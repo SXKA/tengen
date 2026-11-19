@@ -465,6 +465,12 @@ impl Board {
         self.hash
     }
 
+    /// [`Board::hash`] after the side to move plays `pos`.
+    #[inline]
+    pub fn hash_after(&self, pos: Pos) -> u64 {
+        self.hash ^ zobrist().stone[self.side_to_move().index()][pos.index()] ^ zobrist().side
+    }
+
     /// Whether `pos` is on the board.
     #[inline]
     pub fn contains(&self, pos: Pos) -> bool {
@@ -791,8 +797,26 @@ impl Board {
 
     /// The first empty cell where `color` would make five, if any.
     pub fn five_point(&self, color: Color) -> Option<Pos> {
-        if self.p4_count(color, Pattern4::AFive) == 0 {
+        let count = self.p4_count(color, Pattern4::AFive);
+        if count == 0 {
             return None;
+        }
+        // A single five point was almost always made by one of the last two
+        // moves: look along their lines before scanning the board.
+        if count == 1 {
+            for back in 0..2 {
+                let Some(m) = self.recent_move(back) else { continue };
+                for dir in 0..4 {
+                    for k in (-4..=4).filter(|&k| k != 0) {
+                        if let Some(p) = self.step(m, dir, k)
+                            && self.is_empty(p)
+                            && self.p4(p, color) == Pattern4::AFive
+                        {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
         }
         self.area_cells()
             .find(|&p| self.is_empty(p) && self.p4(p, color) == Pattern4::AFive)

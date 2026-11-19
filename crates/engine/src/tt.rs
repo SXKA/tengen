@@ -126,6 +126,20 @@ impl TranspositionTable {
         &self.buckets[index]
     }
 
+    /// Start loading the bucket of `key` into the cache, ahead of a probe.
+    #[inline]
+    pub fn prefetch(&self, key: u64) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let bucket: *const Bucket = self.bucket(key | 1);
+            // SAFETY: a prefetch is only a hint and never faults; the pointer
+            // is to a live bucket anyway.
+            unsafe { std::arch::x86_64::_mm_prefetch::<{ std::arch::x86_64::_MM_HINT_T0 }>(bucket.cast()) };
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = key;
+    }
+
     /// Look up a position.
     #[inline]
     pub fn probe(&self, key: u64) -> Option<TtEntry> {
