@@ -20,6 +20,9 @@ on:
       turn_ms:
         description: Milliseconds per move
         default: "100"
+      match_ms:
+        description: Milliseconds per game for each side (0 for no game clock)
+        default: "0"
       rule:
         description: Game rule (both versions must support it)
         type: choice
@@ -68,6 +71,7 @@ jobs:
             --base base/target/release/pbrain-tengen \
             --games ${{ inputs.games }} \
             --turn-ms ${{ inputs.turn_ms }} \
+            --match-ms ${{ inputs.match_ms }} \
             --rule ${{ inputs.rule }} \
             ${{ inputs.sprt && format('--sprt {0},{1}', inputs.elo0, inputs.elo1) || '' }} \
             --concurrency "$(nproc)" \
