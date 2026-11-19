@@ -217,8 +217,6 @@ const PATTERN_OF: [Pattern; 16] = {
 struct Cell {
     /// 0 empty, 1 black, 2 white, 3 a stone of neither (continuous games).
     stone: u8,
-    /// Number of stones within candidate range.
-    near: u8,
     /// Pattern code per color.
     pcode: [PatternCode; 2],
     /// Pattern combination per color.
@@ -232,7 +230,6 @@ struct Cell {
 
 const EMPTY_CELL: Cell = Cell {
     stone: EMPTY,
-    near: 0,
     pcode: [0; 2],
     p4: [Pattern4::None; 2],
     pattern: [[Pattern::Dead; 4]; 2],
@@ -500,8 +497,7 @@ impl Board {
     /// Whether `pos` is empty and close enough to a stone to be worth playing.
     #[inline]
     pub fn is_candidate(&self, pos: Pos) -> bool {
-        let cell = &self.cells[slot(pos)];
-        cell.stone == 0 && cell.near > 0
+        pos.y() < MAX_SIZE && (self.cand[pos.y()] >> pos.x()) & 1 == 1
     }
 
     /// Moves played so far, oldest first.
@@ -740,10 +736,17 @@ impl Board {
     /// now a candidate, and `pos` no longer is.
     #[inline]
     fn add_candidates(&mut self, pos: Pos) {
-        // Stencil columns by row offset -3..=3, bit dx + 3.
-        const ROWS: [u64; 7] = [
-            0b1001001, 0b0111110, 0b0111110, 0b1110111, 0b0111110, 0b0111110, 0b1001001,
-        ];
+        // NEAR as columns by row offset -3..=3, bit dx + 3.
+        const ROWS: [u64; 7] = {
+            let mut rows = [0u64; 7];
+            let mut i = 0;
+            while i < NEAR.len() {
+                let (dx, dy) = NEAR[i];
+                rows[(dy + 3) as usize] |= 1 << (dx + 3);
+                i += 1;
+            }
+            rows
+        };
         let (px, py) = (pos.x(), pos.y() as isize);
         let full = (1u64 << self.size) - 1;
         for (i, &stencil) in ROWS.iter().enumerate() {
@@ -757,25 +760,6 @@ impl Board {
             self.cand[y] |= mask as u32;
         }
         self.cand[pos.y()] &= !(1u32 << px);
-    }
-
-    /// Bring the candidate bits of `pos` and the cells around it up to date.
-    #[inline]
-    fn refresh_candidates(&mut self, pos: Pos) {
-        let (px, py) = (pos.x() as i32, pos.y() as i32);
-        let n = self.size as i32;
-        for &(dx, dy) in std::iter::once(&(0i8, 0i8)).chain(NEAR.iter()) {
-            let (x, y) = (px + dx as i32, py + dy as i32);
-            if x < 0 || y < 0 || x >= n || y >= n {
-                continue;
-            }
-            let bit = 1u32 << x;
-            if self.is_candidate(Pos::new(x as usize, y as usize)) {
-                self.cand[y as usize] |= bit;
-            } else {
-                self.cand[y as usize] &= !bit;
-            }
-        }
     }
 
     /// The cell `k` steps from `pos` along `dir`, if on the board.
@@ -838,7 +822,6 @@ impl Board {
         self.history.push(self.undo_record(pos));
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
         self.place::<true>(pos, color.index() as u8 + 1);
-        self.update_near(pos, 1);
         self.extend_area(pos);
         self.add_candidates(pos);
     }
@@ -851,8 +834,6 @@ impl Board {
         let pos = undo.pos;
         let color = self.side_to_move();
         self.hash ^= zobrist().stone[color.index()][pos.index()] ^ zobrist().side;
-        // Near counts first: the journal holds them as they were.
-        self.update_near(pos, -1);
         while self.journal.len() > undo.journal_len as usize {
             let (i, cell) = self.journal.pop().expect("journal entry");
             self.cells[i as usize] = cell;
@@ -884,7 +865,7 @@ impl Board {
         self.hash ^= zobrist().wall[pos.index()];
         self.set_stone(pos, WALL);
         self.walls_placed += 1;
-        self.refresh_candidates(pos);
+        self.cand[pos.y()] &= !(1u32 << pos.x());
     }
 
     /// Pass the turn without playing, for null-move style probes. Undo with
@@ -1259,17 +1240,6 @@ impl Board {
         }
     }
 
-    /// Count `delta` more stones near the cells around `pos`. Steps off the
-    /// board land on padding (columns past the side wrap into the padding
-    /// columns of the next or previous row), whose counts are never read.
-    fn update_near(&mut self, pos: Pos, delta: i8) {
-        let center = slot(pos) as isize;
-        for &(dx, dy) in NEAR.iter() {
-            let cell = &mut self.cells[(center + dy as isize * STRIDE as isize + dx as isize) as usize];
-            cell.near = cell.near.wrapping_add_signed(delta);
-        }
-    }
-
     fn extend_area(&mut self, pos: Pos) {
         let r = 3;
         let max = self.size - 1;
@@ -1453,11 +1423,11 @@ pub(crate) mod tests {
         for y in 0..board.size {
             for x in 0..board.size {
                 let p = Pos::new(x, y);
-                assert_eq!(
-                    board.cand[y] >> x & 1 == 1,
-                    board.is_candidate(p),
-                    "candidate bit {p:?}"
-                );
+                let near = board.moves().any(|m| {
+                    let (dx, dy) = (p.x() as i8 - m.x() as i8, p.y() as i8 - m.y() as i8);
+                    NEAR.contains(&(dx, dy))
+                });
+                assert_eq!(board.is_candidate(p), board.is_empty(p) && near, "candidate {p:?}");
             }
         }
         let mut recount = board.clone();
