@@ -619,6 +619,10 @@ struct Worker<'a> {
     best_changes: u32,
     /// The mover's combination at each quiescence move.
     q_p4: Vec<Pattern4>,
+    /// Move left out at each ply by a singular-extension search.
+    excluded: Vec<Pos>,
+    /// Double extensions taken on the path to each ply.
+    double_ext: Vec<i32>,
     evals: Vec<Value>,
     /// The search parameters, copied for quick access.
     p: Params,
@@ -644,6 +648,8 @@ impl<'a> Worker<'a> {
             killers: vec![[Pos::NONE; 2]; plies],
             best_changes: 0,
             q_p4: vec![Pattern4::None; plies],
+            excluded: vec![Pos::NONE; plies],
+            double_ext: vec![0; plies],
             p: *params(),
             evals: vec![0; plies],
             pv: (0..plies).map(|_| Vec::with_capacity(32)).collect(),
@@ -991,12 +997,14 @@ impl<'a> Worker<'a> {
         }
 
         let key = board.hash();
+        let excluded = self.excluded[ply];
         let tte = self.shared.tt.probe(key);
         let tt_move = tte.and_then(|e| e.best_move).filter(|&m| board.is_empty(m));
         // On the principal variation now or when last stored (Rapfi's and
         // Stockfish's ttPv): such nodes are reduced less.
         let tt_pv = PV || tte.is_some_and(|e| e.is_pv);
         if !PV
+            && excluded == Pos::NONE
             && let Some(e) = tte
             && e.depth >= depth
         {
@@ -1028,7 +1036,7 @@ impl<'a> Worker<'a> {
         self.evals[ply] = static_eval;
         let improving = !in_threat && ply >= 2 && static_eval > self.evals[ply - 2];
 
-        if !PV && !in_threat && static_eval.abs() < MATE_BOUND {
+        if !PV && !in_threat && excluded == Pos::NONE && static_eval.abs() < MATE_BOUND {
             // Reverse futility: far above beta with shallow depth left.
             let p = &self.p;
             if depth <= p.rfp_depth && static_eval - (p.rfp_margin * depth - p.rfp_improving * improving as i32) >= beta
@@ -1092,6 +1100,14 @@ impl<'a> Worker<'a> {
             }
         }
         list.sort_unstable_by_key(|m| std::cmp::Reverse(m.score));
+        if excluded != Pos::NONE {
+            list.retain(|m| m.pos != excluded);
+            if list.is_empty() {
+                // Nothing but the excluded move: it is singular.
+                self.lists[ply] = list;
+                return alpha;
+            }
+        }
 
         let original_alpha = alpha;
         let single_reply = list.len() == 1;
@@ -1159,7 +1175,50 @@ impl<'a> Worker<'a> {
                 }
             }
 
-            let extension = (single_reply && ply < 2 * self.root_depth as usize) as i32;
+            let mut extension = (single_reply && ply < 2 * self.root_depth as usize) as i32;
+            // Rapfi's singular extension: if every other move fails low
+            // against a margin below the table value, the table move is the
+            // only good one and is extended (two plies when far below, off
+            // the PV). If another move fails high above beta too, cut
+            // (multi-cut); if only the table value is above beta, reduce.
+            if extension == 0
+                && depth >= 7
+                && Some(pos) == tt_move
+                && excluded == Pos::NONE
+                && ply < 2 * self.root_depth as usize
+                && let Some(e) = tte
+                && e.depth >= depth - 2
+                && e.bound != Bound::Upper
+                && e.value.abs() < MATE_BOUND
+            {
+                let former_pv = (!PV && tt_pv) as i32;
+                let tt_value = value_from_tt(e.value, ply);
+                let singular_beta = tt_value - depth * (85 + 100 * former_pv) / 100;
+                let singular_depth = depth - (depth * 55 / 100 - former_pv);
+                self.excluded[ply] = pos;
+                let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
+                self.excluded[ply] = Pos::NONE;
+                if self.stopped() {
+                    self.lists[ply] = list;
+                    return 0;
+                }
+                if v < singular_beta {
+                    let double_margin = 29 - (depth * 71 / 100).min(4);
+                    extension = if !PV && v < singular_beta - double_margin && self.double_ext[ply] < 11 {
+                        2
+                    } else {
+                        1
+                    };
+                } else if singular_beta >= beta {
+                    self.lists[ply] = list;
+                    return singular_beta;
+                } else if tt_value >= beta {
+                    extension = -1;
+                }
+            }
+            if ply + 1 < self.double_ext.len() {
+                self.double_ext[ply + 1] = self.double_ext[ply] + (extension - 1).max(0);
+            }
             let fail_high_reduction = (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32;
             let new_depth = depth - 1 + extension - fail_high_reduction;
 
@@ -1259,6 +1318,9 @@ impl<'a> Worker<'a> {
         } else {
             Bound::Upper
         };
+        if excluded != Pos::NONE {
+            return best;
+        }
         self.shared.tt.store(
             key,
             TtEntry {
