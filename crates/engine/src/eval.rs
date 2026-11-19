@@ -366,6 +366,9 @@ pub struct CellValues {
     policy_cross: Box<[i32; POLICY_CROSS_LEN]>,
     /// Contexts in which some cross entry is not zero, one bit each.
     cross_active: u8,
+    /// Whether any window weight is not zero: the board counts open
+    /// windows only then.
+    window_active: bool,
 }
 
 impl CellValues {
@@ -393,6 +396,7 @@ impl CellValues {
                 .clone()
                 .try_into()
                 .expect("policy cross table size"),
+            window_active: weights.window.iter().any(|&v| v != 0),
             cross_active: weights
                 .policy_cross
                 .chunks(Pattern4::COUNT * Pattern4::COUNT)
@@ -406,6 +410,12 @@ impl CellValues {
     #[inline]
     pub fn cross_active(&self, context: PolicyContext) -> bool {
         self.cross_active & (1 << context as u8) != 0
+    }
+
+    /// Whether any window weight is not zero.
+    #[inline]
+    pub fn has_window(&self) -> bool {
+        self.window_active
     }
 
     /// Whether the cross table has any entry at all.
@@ -527,7 +537,8 @@ impl Features {
             .filter(|(_, n)| **n != 0)
             .map(|(code, &n)| (code as PatternCode, n))
             .collect();
-        let (mine, theirs) = (board.open_windows(us), board.open_windows(us.opponent()));
+        let windows = board.count_open_windows();
+        let (mine, theirs) = (&windows[us.index()], &windows[us.opponent().index()]);
         Features {
             pcode,
             threat: threat_mask(board, us),

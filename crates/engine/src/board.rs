@@ -62,7 +62,7 @@ impl Color {
     }
 
     #[inline]
-    fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self as usize
     }
 }
@@ -913,10 +913,39 @@ impl Board {
     }
 
     /// Five-cell windows still open to `color`, by how many of its stones
-    /// they hold (0 to 5).
+    /// they hold (0 to 5). Kept up to date only while the evaluation weighs
+    /// windows (see [`eval::CellValues::has_window`]); otherwise use
+    /// [`Board::count_open_windows`].
     #[inline]
     pub fn open_windows(&self, color: Color) -> &[i16; 6] {
         &self.windows[color.index()]
+    }
+
+    /// Open windows of both colors counted from scratch, by color index.
+    pub fn count_open_windows(&self) -> [[i16; 6]; 2] {
+        let mut out = [[0i16; 6]; 2];
+        for dir in 0..4 {
+            for line in 0..LINES {
+                let edge = self.edges[dir][line];
+                let black = self.lines[0][dir][line];
+                let white = self.lines[1][dir][line];
+                let wall = self.walls[dir][line];
+                for start in 0..=32 - 5 {
+                    let mask = 0x1f << start;
+                    if edge & mask != 0 || wall & mask != 0 {
+                        continue;
+                    }
+                    let (b, w) = ((black & mask).count_ones(), (white & mask).count_ones());
+                    if w == 0 {
+                        out[0][b as usize] += 1;
+                    }
+                    if b == 0 {
+                        out[1][w as usize] += 1;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// [`Board::set_stone`], saving every changed cell to the journal first
@@ -930,7 +959,10 @@ impl Board {
         if old == EMPTY {
             self.detach(pos, values);
         }
-        self.count_windows(pos, -1);
+        let windows = values.has_window();
+        if windows {
+            self.count_windows(pos, -1);
+        }
         for dir in 0..4 {
             let (line, at) = self.line_of(pos, dir);
             let bit = 1u32 << (at + PAD);
@@ -941,7 +973,9 @@ impl Board {
             }
         }
         self.cells[slot(pos)].stone = stone;
-        self.count_windows(pos, 1);
+        if windows {
+            self.count_windows(pos, 1);
+        }
         // An occupied cell's patterns are never read and go stale; bring them
         // up to date when it is emptied again.
         if stone == EMPTY {
@@ -1159,10 +1193,7 @@ pub(crate) mod tests {
     #[test]
     fn open_windows_follow_moves_and_undos() {
         let mut board = Board::new(15);
-        assert_eq!(
-            [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
-            recount_windows(&board)
-        );
+        assert_eq!(board.count_open_windows(), recount_windows(&board));
         let moves = [
             (7, 7),
             (8, 8),
@@ -1177,17 +1208,11 @@ pub(crate) mod tests {
         ];
         for &(x, y) in &moves {
             board.play(Pos::new(x, y));
-            assert_eq!(
-                [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
-                recount_windows(&board)
-            );
+            assert_eq!(board.count_open_windows(), recount_windows(&board));
         }
         for _ in 0..4 {
             board.undo();
-            assert_eq!(
-                [*board.open_windows(Color::Black), *board.open_windows(Color::White)],
-                recount_windows(&board)
-            );
+            assert_eq!(board.count_open_windows(), recount_windows(&board));
         }
     }
     use super::*;
