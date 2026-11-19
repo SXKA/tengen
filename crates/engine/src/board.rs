@@ -167,6 +167,33 @@ impl Iterator for AreaCells {
     }
 }
 
+/// Iterator of [`Board::candidates`].
+pub struct Candidates<'a> {
+    cand: &'a [u32; MAX_SIZE],
+    y: usize,
+    y1: usize,
+    xmask: u32,
+    row: u32,
+}
+
+impl Iterator for Candidates<'_> {
+    type Item = Pos;
+
+    #[inline]
+    fn next(&mut self) -> Option<Pos> {
+        while self.row == 0 {
+            if self.y >= self.y1 {
+                return None;
+            }
+            self.y += 1;
+            self.row = self.cand[self.y] & self.xmask;
+        }
+        let x = self.row.trailing_zeros() as usize;
+        self.row &= self.row - 1;
+        Some(Pos::new(x, self.y))
+    }
+}
+
 /// Stone codes of [`Cell::stone`].
 const EMPTY: u8 = 0;
 const BLACK: u8 = 1;
@@ -247,6 +274,8 @@ struct Undo {
     value_late: [i32; 2],
     p4_count: [[u16; Pattern4::COUNT]; 2],
     windows: [[i16; 6]; 2],
+    /// Candidate rows `pos.y - 3 ..= pos.y + 3` before the move.
+    cand_rows: [u32; 7],
 }
 
 /// Zobrist keys, derived deterministically so every board agrees.
@@ -316,6 +345,9 @@ pub struct Board {
     /// undoing a move copies them back instead of recomputing patterns.
     journal: Vec<(u16, Cell)>,
     area: Area,
+    /// Candidate cells ([`Board::is_candidate`]), one bit per column, by
+    /// row: kept with each move so listing them skips the scan.
+    cand: [u32; MAX_SIZE],
     hash: u64,
     /// Sum of [`eval::CellValues`] over empty cells, per color.
     value: [i32; 2],
@@ -360,6 +392,7 @@ impl Board {
             history: Vec::with_capacity(size * size),
             journal: Vec::with_capacity(40 * size * size),
             area: Area::empty(),
+            cand: [0; MAX_SIZE],
             hash: zobrist().rule[rule.index()],
             value: [0; 2],
             value_late: [0; 2],
@@ -682,8 +715,67 @@ impl Board {
     }
 
     /// Empty cells near stones, row by row.
-    pub fn candidates(&self) -> impl Iterator<Item = Pos> + '_ {
-        self.area_cells().filter(|&p| self.is_candidate(p))
+    pub fn candidates(&self) -> Candidates<'_> {
+        let a = self.area;
+        if a.y0 > a.y1 || a.x0 > a.x1 {
+            return Candidates {
+                cand: &self.cand,
+                y: 1,
+                y1: 0,
+                xmask: 0,
+                row: 0,
+            };
+        }
+        let xmask = ((1u64 << (a.x1 as u32 + 1)) - (1u64 << a.x0)) as u32;
+        Candidates {
+            cand: &self.cand,
+            y: a.y0 as usize,
+            y1: a.y1 as usize,
+            xmask,
+            row: self.cand[a.y0 as usize] & xmask,
+        }
+    }
+
+    /// After a stone on `pos`: every empty cell of its [`NEAR`] stencil is
+    /// now a candidate, and `pos` no longer is.
+    #[inline]
+    fn add_candidates(&mut self, pos: Pos) {
+        // Stencil columns by row offset -3..=3, bit dx + 3.
+        const ROWS: [u64; 7] = [
+            0b1001001, 0b0111110, 0b0111110, 0b1110111, 0b0111110, 0b0111110, 0b1001001,
+        ];
+        let (px, py) = (pos.x(), pos.y() as isize);
+        let full = (1u64 << self.size) - 1;
+        for (i, &stencil) in ROWS.iter().enumerate() {
+            let y = py + i as isize - 3;
+            if !(0..self.size as isize).contains(&y) {
+                continue;
+            }
+            let y = y as usize;
+            let occupied = (self.lines[0][0][y] | self.lines[1][0][y] | self.walls[0][y]) as u64 >> PAD;
+            let mask = ((stencil << px) >> 3) & full & !occupied;
+            self.cand[y] |= mask as u32;
+        }
+        self.cand[pos.y()] &= !(1u32 << px);
+    }
+
+    /// Bring the candidate bits of `pos` and the cells around it up to date.
+    #[inline]
+    fn refresh_candidates(&mut self, pos: Pos) {
+        let (px, py) = (pos.x() as i32, pos.y() as i32);
+        let n = self.size as i32;
+        for &(dx, dy) in std::iter::once(&(0i8, 0i8)).chain(NEAR.iter()) {
+            let (x, y) = (px + dx as i32, py + dy as i32);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let bit = 1u32 << x;
+            if self.is_candidate(Pos::new(x as usize, y as usize)) {
+                self.cand[y as usize] |= bit;
+            } else {
+                self.cand[y as usize] &= !bit;
+            }
+        }
     }
 
     /// The cell `k` steps from `pos` along `dir`, if on the board.
@@ -724,6 +816,18 @@ impl Board {
             value_late: self.value_late,
             p4_count: self.p4_count,
             windows: self.windows,
+            cand_rows: if pos == Pos::NONE {
+                [0; 7]
+            } else {
+                std::array::from_fn(|i| {
+                    let y = pos.y() as isize + i as isize - 3;
+                    if (0..self.size as isize).contains(&y) {
+                        self.cand[y as usize]
+                    } else {
+                        0
+                    }
+                })
+            },
         }
     }
 
@@ -736,6 +840,7 @@ impl Board {
         self.place::<true>(pos, color.index() as u8 + 1);
         self.update_near(pos, 1);
         self.extend_area(pos);
+        self.add_candidates(pos);
     }
 
     /// Take back the last move: copy back the cells it changed and the
@@ -762,6 +867,12 @@ impl Board {
         self.p4_count = undo.p4_count;
         self.windows = undo.windows;
         self.area = undo.area;
+        for (i, &row) in undo.cand_rows.iter().enumerate() {
+            let y = pos.y() as isize + i as isize - 3;
+            if (0..self.size as isize).contains(&y) {
+                self.cand[y as usize] = row;
+            }
+        }
     }
 
     /// Put a stone of neither player on an empty cell. In a continuous game
@@ -773,6 +884,7 @@ impl Board {
         self.hash ^= zobrist().wall[pos.index()];
         self.set_stone(pos, WALL);
         self.walls_placed += 1;
+        self.refresh_candidates(pos);
     }
 
     /// Pass the turn without playing, for null-move style probes. Undo with
@@ -1336,6 +1448,16 @@ pub(crate) mod tests {
                     assert_eq!(patterns, board.cells[slot(p)].pattern, "{p:?}");
                     assert_eq!(flags, board.cells[slot(p)].flags, "{p:?}");
                 }
+            }
+        }
+        for y in 0..board.size {
+            for x in 0..board.size {
+                let p = Pos::new(x, y);
+                assert_eq!(
+                    board.cand[y] >> x & 1 == 1,
+                    board.is_candidate(p),
+                    "candidate bit {p:?}"
+                );
             }
         }
         let mut recount = board.clone();
