@@ -22,6 +22,12 @@
 //! `fit-cross` learns the cross table on top of them: a correction per
 //! position context for what a move makes and what it takes away together,
 //! as in Rapfi's classical policy.
+//! `fit-blend` refines the pattern-code and threat tables in the form of
+//! Rapfi's classical evaluation, which the engine uses when the weights set
+//! a blend: one pattern-code table, applied to the position and to the one
+//! before the last move, mixed with the threat term by the blend weights and
+//! mapped through the readout curve. Like `fit-local` it starts from the
+//! current tables, pulled toward them by each L2 strength in turn.
 //! `init` writes the untuned factored defaults.
 //!
 //! `label` asks a stronger Piskvork brain (`--brain`, e.g. Rapfi, searching
@@ -60,6 +66,8 @@ const USAGE: &str = "usage:
   tengen-tune fit-window --data FILE[,FILE...] [--weights FILE] [--epochs 300] [--lambda 1] [--kinds 4]
                          --out FILE
   tengen-tune fit-local --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
+                        [--l2 1e-6,1e-7,1e-8] --out FILE
+  tengen-tune fit-blend --data FILE[,FILE...] [--weights FILE] [--epochs 400] [--lambda 1]
                         [--l2 1e-6,1e-7,1e-8] --out FILE
   tengen-tune fit-policy --data FILE[,FILE...] [--weights FILE] [--epochs 300] --out FILE
   tengen-tune init --out FILE";
@@ -153,6 +161,24 @@ fn main() {
                 .map(|v| v.parse().unwrap_or_else(|_| fail("bad --l2")))
                 .collect();
             let tuned = fit_local(
+                &data.split(',').collect::<Vec<_>>(),
+                &weights,
+                epochs,
+                lambda,
+                &strengths,
+            );
+            std::fs::write(&out, tuned.to_string()).unwrap_or_else(|e| fail(&format!("{out}: {e}")));
+        }
+        Some("fit-blend") => {
+            let data = flag("--data").unwrap_or_else(|| fail("--data is required"));
+            let lambda: f64 = flag("--lambda").map_or(1.0, |v| v.parse().unwrap_or_else(|_| fail("bad --lambda")));
+            let epochs = number("--epochs", 400) as usize;
+            let strengths: Vec<f64> = flag("--l2")
+                .unwrap_or_else(|| "1e-6,1e-7,1e-8".to_string())
+                .split(',')
+                .map(|v| v.parse().unwrap_or_else(|_| fail("bad --l2")))
+                .collect();
+            let tuned = fit_blend(
                 &data.split(',').collect::<Vec<_>>(),
                 &weights,
                 epochs,
@@ -281,6 +307,10 @@ struct Sample {
     /// count of each line pattern and of each combination.
     pattern: [i32; Pattern::COUNT],
     pattern4: [i32; Pattern4::COUNT],
+    /// Own minus opponent count of empty cells per pattern code, for the
+    /// side to move, in the position before the last move; empty unless
+    /// loaded for [`BlendModel`].
+    previous: Vec<(PatternCode, i32)>,
     result: f64,
     /// The teacher's evaluation for the side to move, from `label`.
     teacher: Option<f64>,
@@ -616,6 +646,12 @@ fn par_gradient<T: Sync>(samples: &[T], n: usize, f: impl Fn(&T, &mut [f64]) + S
 /// out: the threat search settles those, so the static evaluation should not
 /// be trained to anticipate them.
 fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
+    load_samples(paths, false)
+}
+
+/// [`load`], also with each sample's [`Sample::previous`] counts if
+/// `previous`.
+fn load_samples(paths: &[&str], previous: bool) -> (Vec<Sample>, Vec<Sample>) {
     let tables = Tables::get();
     let lines = read_lines(paths);
     let tactical = std::sync::atomic::AtomicUsize::new(0);
@@ -637,6 +673,17 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
         });
         let mut board = game.board();
         for (ply, &pos) in moves.iter().enumerate() {
+            // The mover's counts before the move, negated: the side to move
+            // after it is the other color.
+            let before: Vec<(PatternCode, i32)> = if previous {
+                Features::of(&board)
+                    .pcode
+                    .into_iter()
+                    .map(|(code, n)| (code, -n))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             board.play(pos);
             let teacher = match &labels {
                 Some(labels) => match labels.get(&ply) {
@@ -674,6 +721,7 @@ fn load(paths: &[&str]) -> (Vec<Sample>, Vec<Sample>) {
                 features,
                 pattern,
                 pattern4,
+                previous: before,
                 result,
                 teacher,
             });
@@ -705,6 +753,10 @@ trait Model {
     fn eval(&self, s: &Sample, p: &[f64]) -> f64;
     /// Add `g` times the gradient of the evaluation to `grad`.
     fn grad(&self, s: &Sample, g: f64, grad: &mut [f64]);
+    /// [`Model::grad`] at parameters `p`, for models that are not linear.
+    fn grad_at(&self, s: &Sample, _p: &[f64], g: f64, grad: &mut [f64]) {
+        self.grad(s, g, grad)
+    }
 }
 
 /// Per line pattern and per combination, early and late in the game, and
@@ -769,6 +821,79 @@ impl Model for CodeModel {
     }
 }
 
+/// Rapfi's classical evaluation: one value per pattern code, applied to the
+/// position and to the one before the last move, the threat term, mixed by
+/// `blend` (fractions) and mapped through the readout curve, which passes
+/// through `knots` at `READOUT_KNOTS` (both in evaluation units), linear in
+/// between and with slope one beyond.
+struct BlendModel {
+    blend: [f64; 3],
+    knots: Option<([f64; 6], [f64; 6])>,
+}
+
+impl BlendModel {
+    fn new(weights: &Weights) -> BlendModel {
+        let unit = |k: i32| k as f64 * SCALE / 1000.0;
+        BlendModel {
+            blend: std::array::from_fn(|i| weights.blend[i] as f64 / eval::BLEND_SCALE as f64),
+            knots: (weights.readout != eval::READOUT_KNOTS).then(|| {
+                (
+                    eval::READOUT_KNOTS.map(unit),
+                    std::array::from_fn(|i| unit(weights.readout[i])),
+                )
+            }),
+        }
+    }
+
+    fn linear(&self, s: &Sample, p: &[f64]) -> f64 {
+        let cells = |counts: &[(PatternCode, i32)]| -> f64 {
+            counts.iter().map(|&(code, n)| n as f64 * p[code as usize]).sum()
+        };
+        self.blend[0] * cells(&s.features.pcode)
+            + self.blend[1] * cells(&s.previous)
+            + self.blend[2] * p[PCODE_COUNT + s.features.threat]
+    }
+
+    /// The readout curve at `v` and its slope there.
+    fn read_out(&self, v: f64) -> (f64, f64) {
+        let Some((xs, ys)) = &self.knots else {
+            return (v, 1.0);
+        };
+        let x = v.abs();
+        let last = xs.len() - 1;
+        let (y, slope) = if x >= xs[last] {
+            (ys[last] + x - xs[last], 1.0)
+        } else {
+            let hi = (1..=last).find(|&i| x <= xs[i]).unwrap_or(last);
+            let slope = (ys[hi] - ys[hi - 1]) / (xs[hi] - xs[hi - 1]);
+            (ys[hi - 1] + slope * (x - xs[hi - 1]), slope)
+        };
+        (y.copysign(v), slope)
+    }
+}
+
+impl Model for BlendModel {
+    fn params(&self) -> usize {
+        PCODE_COUNT + THREAT_COUNT
+    }
+    fn eval(&self, s: &Sample, p: &[f64]) -> f64 {
+        self.read_out(self.linear(s, p)).0
+    }
+    fn grad(&self, s: &Sample, g: f64, grad: &mut [f64]) {
+        for &(code, n) in &s.features.pcode {
+            grad[code as usize] += g * self.blend[0] * n as f64;
+        }
+        for &(code, n) in &s.previous {
+            grad[code as usize] += g * self.blend[1] * n as f64;
+        }
+        grad[PCODE_COUNT + s.features.threat] += g * self.blend[2];
+    }
+    fn grad_at(&self, s: &Sample, p: &[f64], g: f64, grad: &mut [f64]) {
+        let slope = self.read_out(self.linear(s, p)).1;
+        self.grad(s, g * slope, grad)
+    }
+}
+
 fn sigmoid(v: f64) -> f64 {
     1.0 / (1.0 + (-v / SCALE).exp())
 }
@@ -799,7 +924,7 @@ fn optimize(
         let grad = par_gradient(samples, n, |s, grad| {
             let q = sigmoid(model.eval(s, &p));
             // d/dv of (r - q)^2 with q = sigmoid(v / SCALE).
-            model.grad(s, -2.0 * (s.result - q) * q * (1.0 - q) / SCALE / count, grad);
+            model.grad_at(s, &p, -2.0 * (s.result - q) * q * (1.0 - q) / SCALE / count, grad);
         });
         for i in 0..n {
             let g = grad[i] + 2.0 * l2 * (p[i] - prior[i]);
@@ -853,6 +978,50 @@ fn fit_local(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, stre
         eprintln!(
             "local, l2 {l2:e}: train {:.6}, validation {valid_loss:.6}",
             loss(&codes, &train, &p)
+        );
+        if valid_loss < best_loss {
+            best_loss = valid_loss;
+            best = candidate;
+        }
+    }
+    eprintln!("kept validation loss {best_loss:.6}");
+    best
+}
+
+/// [`fit_local`] for [`BlendModel`]: refine the pattern-code table (early
+/// and late alike) and the threat table of `weights` in the form the
+/// engine evaluates them with its blend and readout.
+fn fit_blend(paths: &[&str], weights: &Weights, epochs: usize, lambda: f64, strengths: &[f64]) -> Weights {
+    if weights.blend == eval::PLAIN_BLEND {
+        fail("fit-blend needs weights with a blend");
+    }
+    let (mut train, mut valid) = load_samples(paths, true);
+    if train.is_empty() || valid.is_empty() {
+        fail("not enough positions to fit");
+    }
+    apply_teacher(&mut train, &mut valid, lambda);
+    let model = BlendModel::new(weights);
+    let as_params = |w: &Weights| -> Vec<f64> { w.pcode.iter().chain(&w.threat).map(|&v| v as f64).collect() };
+    let current = as_params(weights);
+    let mut best = weights.clone();
+    let mut best_loss = loss(&model, &valid, &current);
+    eprintln!(
+        "current: train {:.6}, validation {best_loss:.6}",
+        loss(&model, &train, &current)
+    );
+    for &l2 in strengths {
+        let p = optimize(&model, &train, &current, &current, l2, epochs);
+        let rounded: Vec<i32> = p.iter().map(|&v| v.round() as i32).collect();
+        let candidate = Weights {
+            pcode: rounded[..PCODE_COUNT].to_vec(),
+            pcode_late: rounded[..PCODE_COUNT].to_vec(),
+            threat: rounded[PCODE_COUNT..].to_vec(),
+            ..weights.clone()
+        };
+        let valid_loss = loss(&model, &valid, &as_params(&candidate));
+        eprintln!(
+            "blend, l2 {l2:e}: train {:.6}, validation {valid_loss:.6}",
+            loss(&model, &train, &p)
         );
         if valid_loss < best_loss {
             best_loss = valid_loss;
@@ -1559,5 +1728,53 @@ fn fit_cross(paths: &[&str], start: &Weights, epochs: usize, l2: f64, min_count:
     Weights {
         policy_cross: rounded,
         ..start.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blend_model_reproduces_the_evaluation() {
+        let weights = Weights::built_in(Rule::Freestyle);
+        if weights.blend == eval::PLAIN_BLEND {
+            return;
+        }
+        let model = BlendModel::new(&weights);
+        let p: Vec<f64> = weights.pcode.iter().chain(&weights.threat).map(|&v| v as f64).collect();
+        let mut board = Board::new(15);
+        for (x, y) in [
+            (7, 7),
+            (8, 8),
+            (7, 8),
+            (6, 6),
+            (8, 6),
+            (9, 9),
+            (6, 8),
+            (0, 1),
+            (5, 9),
+            (10, 10),
+        ] {
+            let previous = Features::of(&board)
+                .pcode
+                .into_iter()
+                .map(|(code, n)| (code, -n))
+                .collect();
+            board.play(Pos::new(x, y));
+            let sample = Sample {
+                features: Features::of(&board),
+                pattern: [0; Pattern::COUNT],
+                pattern4: [0; Pattern4::COUNT],
+                previous,
+                result: 0.5,
+                teacher: None,
+            };
+            let (model_value, engine_value) = (model.eval(&sample, &p), eval::evaluate(&board) as f64);
+            assert!(
+                (model_value - engine_value).abs() <= 2.0,
+                "{model_value} vs {engine_value}"
+            );
+        }
     }
 }
