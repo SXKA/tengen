@@ -1119,7 +1119,14 @@ impl<'a> Worker<'a> {
             // ply less than quiet moves (Rapfi reduces every move).
             // Defences against an open three or a four-three are reduced
             // too, as in Rapfi; only the block of a five never is.
-            let four = opp_fives > 0 || self.board.p4(pos, us) >= Pattern4::EBlock4;
+            // Against an open three, a move that blocks nothing (a plain
+            // counter-four) is reduced too, more when far from the last
+            // moves: Rapfi's useless-defence reduction.
+            let useless = in_threat
+                && opp_fives == 0
+                && self.board.p4(pos, them) < Pattern4::EBlock4
+                && self.board.p4(pos, us) < Pattern4::BFlex4;
+            let four = opp_fives > 0 || (self.board.p4(pos, us) >= Pattern4::EBlock4 && !useless);
 
             // Rapfi's move-count pruning also drops late threes; only fours
             // and forced replies are kept.
@@ -1173,6 +1180,10 @@ impl<'a> Worker<'a> {
                     r -= tt_pv as i32 + improving as i32;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
                     r -= tactical as i32;
+                    if useless {
+                        let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > 4);
+                        r += 2 * far(self.board.recent_move(0)) as i32 + far(self.board.recent_move(1)) as i32;
+                    }
                     r = r.clamp(0, new_depth - 1);
                 }
                 v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);
