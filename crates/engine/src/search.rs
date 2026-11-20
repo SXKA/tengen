@@ -1117,8 +1117,8 @@ impl<'a> Worker<'a> {
                 forced || self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, them) >= Pattern4::HFlex3;
             // Fours and blocks of fours are never reduced; threes are, a ply
             // less than quiet moves (Rapfi reduces every move).
-            let four =
-                forced || self.board.p4(pos, us) >= Pattern4::EBlock4 || self.board.p4(pos, them) >= Pattern4::EBlock4;
+            // Blocks are reduced too, as Rapfi reduces every move.
+            let four = forced || self.board.p4(pos, us) >= Pattern4::EBlock4;
 
             // Rapfi's move-count pruning also drops late threes; only fours
             // and forced replies are kept.
