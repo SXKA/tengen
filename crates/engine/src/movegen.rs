@@ -292,6 +292,51 @@ fn generate_four_three_defences(
             }
         }
     }
+    // Rapfi's counter-defences against a single four-three point: once its
+    // four is blocked, a block that is also our four takes the tempo back.
+    // If the block point already is our four, the four-three is no threat
+    // and every move is searched; otherwise a three of ours through the
+    // block point makes the forced block a four, so it defends too.
+    let mut counters = Vec::new();
+    if let [point] = points[..] {
+        for dir in 0..4 {
+            if board.pattern(point, them, dir) != Pattern::B4 {
+                continue;
+            }
+            board.pass();
+            board.play(point);
+            let block = (-4..=4)
+                .filter_map(|k| board.step(point, dir, k))
+                .find(|&q| board.is_empty(q) && board.p4(q, them) == Pattern4::AFive);
+            board.undo();
+            board.undo_pass();
+            let Some(block) = block else {
+                continue;
+            };
+            if board.p4(block, us) >= Pattern4::EBlock4 {
+                moves.clear();
+                return;
+            }
+            for d in 0..4 {
+                for side in [-1isize, 1] {
+                    for k in 1..=4 {
+                        let Some(q) = board.step(block, d, side * k) else {
+                            break;
+                        };
+                        if board.stone(q) == Some(us) {
+                            continue;
+                        }
+                        if board.is_empty(q) && board.pattern(q, us, d) >= Pattern::B3 {
+                            mark(q, &mut try_cells);
+                            counters.push(q);
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
     for pos in board.candidates() {
         if board.p4(pos, us) >= Pattern4::EBlock4 {
             mark(pos, &mut try_cells);
@@ -306,6 +351,10 @@ fn generate_four_three_defences(
             continue;
         }
         if forbid && board.is_forbidden(pos) {
+            continue;
+        }
+        if counters.contains(&pos) {
+            moves.push(ScoredMove { pos, score });
             continue;
         }
         let stops = stops_all(board, &points, them, pos, Pattern4::CBlock4Flex3).unwrap_or_else(|| {
