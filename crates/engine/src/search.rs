@@ -1148,7 +1148,8 @@ impl<'a> Worker<'a> {
             // and forced replies are kept.
             // Rapfi prunes by move count at PV nodes too (not the root).
             // Fours too, as in Rapfi.
-            if !in_threat && !forced && best > -MATE_BOUND && move_count > lmp_limit {
+            // Against a four-three too (marked forced), as Rapfi prunes there.
+            if !in_threat && best > -MATE_BOUND && move_count > lmp_limit {
                 continue;
             }
             // Rapfi: against an open four, near the leaves, a move that does
