@@ -879,8 +879,11 @@ impl<'a> Worker<'a> {
             let v = if i == 0 {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
             } else {
-                let r = if depth >= 3 && i >= 3 && !tactical {
-                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1).clamp(0, depth - 2)
+                // Late root moves are reduced, threes and fours included (a
+                // ply less), as Rapfi reduces every root move after the
+                // second.
+                let r = if depth >= 3 && i >= 2 {
+                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1 - tactical as i32).clamp(0, depth - 2)
                 } else {
                     0
                 };
