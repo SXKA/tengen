@@ -934,7 +934,8 @@ impl<'a> Worker<'a> {
             self.seldepth = 0;
             total_changes *= scaled(self.p.time_changes_decay, 1000.0);
 
-            let mut delta = self.p.aspiration;
+            // At least one point, so the window widens on a fail.
+            let mut delta = self.p.aspiration.max(1);
             let (mut alpha, mut beta) = if depth >= self.p.aspiration_depth && value.abs() < MATE_BOUND {
                 (value - delta, value + delta)
             } else {
@@ -1004,7 +1005,8 @@ impl<'a> Worker<'a> {
                     let p = &self.p;
                     let falling = (scaled(p.time_falling_slope, 10000.0) * dropped
                         + scaled(p.time_falling_base, 1000.0))
-                    .clamp(scaled(p.time_falling_min, 1000.0), scaled(p.time_falling_max, 1000.0));
+                    .max(scaled(p.time_falling_min, 1000.0))
+                    .min(scaled(p.time_falling_max, 1000.0));
                     // Less time the longer the best move has stayed the same.
                     time_reduction =
                         1.0 + scaled(p.time_stability, 10000.0) * (search_depth - last_change_depth) as f64;
@@ -1053,7 +1055,9 @@ impl<'a> Worker<'a> {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
             } else {
                 let r = if depth >= self.p.root_lmr_depth && i >= self.p.root_lmr_moves.max(0) as usize && !tactical {
-                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - self.p.root_lmr_less).clamp(0, depth - 2)
+                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - self.p.root_lmr_less)
+                        .min(depth - 2)
+                        .max(0)
                 } else {
                     0
                 };
@@ -1444,7 +1448,8 @@ impl<'a> Worker<'a> {
                         r += self.p.useless_far_opponent * far(self.board.recent_move(0)) as i32
                             + self.p.useless_far_own * far(self.board.recent_move(1)) as i32;
                     }
-                    r = r.clamp(0, new_depth - 1);
+                    // Down to one ply (none left if the move is already at one).
+                    r = r.min(new_depth - 1).max(0);
                 }
                 v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);
                 if v > alpha && r > 0 {
