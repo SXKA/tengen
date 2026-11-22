@@ -338,7 +338,8 @@ const MAX_REACH: i8 = 4;
 /// Candidate rows a move can change.
 const CAND_ROWS: usize = 2 * MAX_REACH as usize + 1;
 
-static DEFAULT_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(CandidateRange::Square2Line3 as u8);
+static DEFAULT_RANGE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(CandidateRange::Square2Line3 as u8);
 
 /// The candidate range new boards get.
 pub fn default_candidate_range() -> CandidateRange {

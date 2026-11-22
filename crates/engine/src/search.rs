@@ -1286,11 +1286,16 @@ impl<'a> Worker<'a> {
         let mut attack_count = 0;
         // Rapfi's move-count pruning: the limit grows as depth^1.3, so it
         // keeps pruning at every depth, not only near the leaves.
-        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32) / (2 - improving as i32);
+        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32)
+            / (2 - improving as i32);
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
-        let distract_self = if self.board.rule() == Rule::Renju { self.p.distract_own_renju } else { self.p.distract_own };
+        let distract_self = if self.board.rule() == Rule::Renju {
+            self.p.distract_own_renju
+        } else {
+            self.p.distract_own
+        };
         let distract_opponent = self.p.distract_opponent;
         let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + self.p.fail_high_margin * depth;
 
@@ -1326,7 +1331,10 @@ impl<'a> Worker<'a> {
                 && depth <= self.p.distract_depth
                 && best > -MATE_BOUND
                 && self.board.p4(pos, them) < Pattern4::EBlock4
-                && self.board.recent_move(0).is_some_and(|m| chebyshev(pos, m) > distract_opponent)
+                && self
+                    .board
+                    .recent_move(0)
+                    .is_some_and(|m| chebyshev(pos, m) > distract_opponent)
                 && self
                     .board
                     .recent_move(1)
@@ -1338,7 +1346,10 @@ impl<'a> Worker<'a> {
                 // Futility pruning of quiet moves near the leaves.
                 let p = &self.p;
                 if depth <= p.futility_depth
-                    && static_eval + p.futility_base + p.futility_margin * depth + m.score.min(p.futility_score_cap) / p.futility_score_div.max(1)
+                    && static_eval
+                        + p.futility_base
+                        + p.futility_margin * depth
+                        + m.score.min(p.futility_score_cap) / p.futility_score_div.max(1)
                         <= alpha
                 {
                     continue;
@@ -1373,12 +1384,14 @@ impl<'a> Worker<'a> {
                     return 0;
                 }
                 if v < singular_beta {
-                    let double_margin = self.p.se_double_base - (depth * self.p.se_double_scale / 100).min(self.p.se_double_cap);
-                    extension = if !PV && v < singular_beta - double_margin && self.double_ext[ply] < self.p.se_double_max {
-                        2
-                    } else {
-                        1
-                    };
+                    let double_margin =
+                        self.p.se_double_base - (depth * self.p.se_double_scale / 100).min(self.p.se_double_cap);
+                    extension =
+                        if !PV && v < singular_beta - double_margin && self.double_ext[ply] < self.p.se_double_max {
+                            2
+                        } else {
+                            1
+                        };
                 } else if singular_beta >= beta {
                     self.lists[ply] = list;
                     return singular_beta;
@@ -1592,7 +1605,9 @@ impl<'a> Worker<'a> {
         }
         // After two fours, plain fours only follow two fours that each made
         // more than a four; otherwise a four must come with more.
-        if qply >= self.p.qsearch_plain_fours.max(4) as usize && (self.q_p4[ply - 2] < Pattern4::DBlock4Plus || self.q_p4[ply - 4] < Pattern4::DBlock4Plus) {
+        if qply >= self.p.qsearch_plain_fours.max(4) as usize
+            && (self.q_p4[ply - 2] < Pattern4::DBlock4Plus || self.q_p4[ply - 4] < Pattern4::DBlock4Plus)
+        {
             let board = &self.board;
             list.retain(|m| board.p4(m.pos, us) >= Pattern4::DBlock4Plus);
         }
