@@ -1,0 +1,52 @@
+//! Searching with extreme parameters must neither panic nor hang: every
+//! constant of the search is a parameter, and tuning tries odd values.
+
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Run `pbrain-tengen --params <params> bench 5` and return its output.
+fn bench(params: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pbrain-tengen"))
+        .args(["--params", params, "bench", "5"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("pbrain-tengen starts");
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("pbrain-tengen runs") {
+            let output = child.wait_with_output().expect("output");
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            assert!(
+                status.success(),
+                "--params {params} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return text;
+        }
+        if start.elapsed() > Duration::from_secs(120) {
+            child.kill().ok();
+            panic!("--params {params} did not finish");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn extreme_parameters_search() {
+    for params in [
+        "lmr_depth=1",
+        "root_lmr_depth=0,root_lmr_moves=0",
+        "iir_depth=1,iir_reduction=5",
+        "lmr_base=-500,lmr_scale=-100,lmr_cut_node=5",
+        "se_depth=1,se_tt_depth=0,se_reduction=100",
+        "alpha_reduce_min=0,alpha_reduce_max=100",
+        "qsearch_plies=0,qsearch_plain_fours=0",
+        "aspiration=0,aspiration_depth=0",
+        "history_max=0,history_bonus=0",
+        "time_falling_min=2000,time_falling_max=0",
+        "fail_high_margin=0,fail_high_reduction=3",
+    ] {
+        assert!(bench(params).contains("nodes"), "--params {params}");
+    }
+}
