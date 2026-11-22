@@ -43,6 +43,8 @@ struct Options {
     record: Option<String>,
     /// Play the openings of this book instead of random ones.
     openings: Option<String>,
+    /// Deepest iteration for both brains.
+    max_depth: Option<u32>,
 }
 
 impl Options {
@@ -62,6 +64,7 @@ impl Options {
             seed: 1,
             record: None,
             openings: None,
+            max_depth: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -84,6 +87,7 @@ impl Options {
                 "--seed" => o.seed = number(value()?)?,
                 "--record" => o.record = Some(value()?),
                 "--openings" => o.openings = Some(value()?),
+                "--max-depth" => o.max_depth = Some(number(value()?)? as u32),
                 "--sprt" => {
                     let v = value()?;
                     let (a, b) = v.split_once(',').ok_or("--sprt takes elo0,elo1")?;
@@ -103,7 +107,8 @@ impl Options {
 
 const USAGE: &str = "usage: tengen-arena --new BRAIN --base BRAIN [--games N] [--concurrency N]
        [--size 15] [--rule freestyle|standard|renju|caro|freestyle-caro] [--turn-ms 200] [--match-ms 0]
-       [--memory-mb 160] [--new-turn-ms MS] [--sprt ELO0,ELO1] [--seed 1] [--record FILE] [--openings FILE]";
+       [--memory-mb 160] [--new-turn-ms MS] [--sprt ELO0,ELO1] [--seed 1] [--record FILE] [--openings FILE]
+       [--max-depth N]";
 
 /// Pairs to play before the SPRT may stop the match.
 const MIN_PAIRS: u64 = 50;
@@ -158,6 +163,7 @@ fn main() {
         match_ms: options.match_ms,
         memory_mb: options.memory_mb,
         turn_override: options.new_turn_ms.map(|ms| (options.new.clone(), ms)),
+        max_depth: options.max_depth,
     };
 
     let book = options.openings.as_deref().map(|path| {
@@ -277,8 +283,12 @@ fn main() {
         );
     }
     println!(
-        "\nturn {} ms, match {} ms, board {}x{}",
-        options.turn_ms, options.match_ms, options.size, options.size
+        "\nturn {} ms, match {} ms, board {}x{}{}",
+        options.turn_ms,
+        options.match_ms,
+        options.size,
+        options.size,
+        options.max_depth.map_or(String::new(), |d| format!(", depth {d}"))
     );
     if !t.errors.is_empty() {
         println!("\n{} game(s) ended by errors, first: {}", t.errors.len(), t.errors[0]);
