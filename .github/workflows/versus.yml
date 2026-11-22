@@ -5,7 +5,11 @@ name: Versus Rapfi
 # with its classical evaluation only. Both play with the official weights
 # from https://github.com/dhbloo/rapfi-networks. Start it from the Actions
 # tab; every game is played (no early stop), so the Elo is unbiased. With
-# players set to rapfi, Rapfi's NNUE plays its classical evaluation instead.
+# players set to rapfi, Rapfi's NNUE plays its classical evaluation instead;
+# with rapfi-candidates, Rapfi classical with rapfi_candidates plays Rapfi
+# classical with its configured range (square3_line4). rapfi_candidates and
+# tengen_candidates set the candidate moves of each engine, so both can be
+# compared on the same range.
 on:
   workflow_dispatch:
     inputs:
@@ -35,10 +39,20 @@ on:
         options: [freestyle, standard, renju]
         default: freestyle
       players:
-        description: Tengen against both Rapfis, or Rapfi NNUE against Rapfi classical
+        description: Tengen against both Rapfis, Rapfi NNUE against Rapfi classical, or Rapfi classical with rapfi_candidates against its own range
         type: choice
-        options: [tengen, rapfi]
+        options: [tengen, rapfi, rapfi-candidates]
         default: tengen
+      rapfi_candidates:
+        description: Rapfi's candidate range (empty for its configuration's, square3_line4)
+        type: choice
+        options: ["", square2, square2_line3, square3, square3_line4, square4]
+        default: ""
+      tengen_candidates:
+        description: Tengen's candidate range (empty for its default)
+        type: choice
+        options: ["", square2, square2_line3, square3, square3_line4, square4]
+        default: ""
 
 permissions:
   contents: read
@@ -73,9 +87,23 @@ jobs:
           cp networks/config-example/config.toml networks/classical/*.bin networks/mix9svq/* dist/nnue/
           cp networks/config-example/gomocalc-classical260809.toml dist/classical/config.toml
           cp networks/classical/*.bin dist/classical/
+          range="${{ inputs.rapfi_candidates }}"
+          if [ -n "$range" ]; then
+            # A copy of the classical Rapfi with the candidate range set, and
+            # for Tengen's matches the same range for both opponents.
+            mkdir -p dist/classical-cand
+            cp -r dist/classical/. dist/classical-cand/
+            configs=dist/classical-cand/config.toml
+            [ "${{ inputs.players }}" = rapfi-candidates ] || configs="$configs dist/nnue/config.toml dist/classical/config.toml"
+            for config in $configs; do
+              sed -i "s/^default_candidate_range = .*/default_candidate_range = \"$range\"/" "$config"
+              grep -q "^default_candidate_range = \"$range\"" "$config"
+            done
+          fi
           {
             echo '### Rapfi'
             echo "rapfi $(git -C rapfi rev-parse --short HEAD), networks $(git -C networks rev-parse --short HEAD)"
+            echo "candidates: Rapfi ${{ inputs.rapfi_candidates || 'square3_line4' }}, Tengen ${{ inputs.tengen_candidates || 'default' }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
@@ -103,16 +131,25 @@ jobs:
           name: rapfi
           path: rapfi
       - name: Play
-        if: inputs.players == 'tengen' || matrix.evaluation == 'nnue'
+        if: >-
+          inputs.players == 'tengen' || (inputs.players == 'rapfi' && matrix.evaluation == 'nnue')
+          || (inputs.players == 'rapfi-candidates' && matrix.evaluation == 'classical')
         run: |
           chmod +x rapfi/*/pbrain-rapfi
           new=target/release/pbrain-tengen
+          [ -n "${{ inputs.tengen_candidates }}" ] && new="$new --candidates ${{ inputs.tengen_candidates }}"
           base=rapfi/${{ matrix.evaluation }}/pbrain-rapfi
           title="Tengen against Rapfi (${{ matrix.evaluation }})"
           if [ "${{ inputs.players }}" = rapfi ]; then
             new=rapfi/nnue/pbrain-rapfi
             base=rapfi/classical/pbrain-rapfi
             title="Rapfi NNUE against Rapfi classical"
+          fi
+          if [ "${{ inputs.players }}" = rapfi-candidates ]; then
+            test -n "${{ inputs.rapfi_candidates }}"
+            new=rapfi/classical-cand/pbrain-rapfi
+            base=rapfi/classical/pbrain-rapfi
+            title="Rapfi classical with ${{ inputs.rapfi_candidates }} against square3_line4"
           fi
           {
             echo "### $title (part ${{ matrix.shard }} of 4)"
