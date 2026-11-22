@@ -536,6 +536,19 @@ params! {
     lmr_scale = 104,
     /// Late move reductions: history points per ply less.
     lmr_history = 5873,
+    /// Late move reductions: plies more at cut nodes.
+    lmr_cut_node = 1,
+    /// Late move reductions: plies less at nodes that were on the PV.
+    lmr_tt_pv = 1,
+    /// Late move reductions: plies less when the position improves.
+    lmr_improving = 1,
+    /// Late move reductions: plies less for our threes and forced replies.
+    lmr_threat = 1,
+    /// Internal iterative reduction: plies less without a table move.
+    iir_reduction = 1,
+    /// Fail-high reduction: plies less for a quiet move when the static
+    /// evaluation is far above beta at a cut node.
+    fail_high_reduction = 1,
     /// Fail-high reduction: static evaluation above beta by this much per
     /// ply.
     fail_high_margin = 18,
@@ -1221,7 +1234,7 @@ impl<'a> Worker<'a> {
 
         // Internal iterative reduction: no move to try first, search less.
         let mut depth = if (PV || cut_node) && depth >= self.p.iir_depth && tt_move.is_none() {
-            depth - 1
+            (depth - self.p.iir_reduction).max(1)
         } else {
             depth
         };
@@ -1402,7 +1415,8 @@ impl<'a> Worker<'a> {
             if ply + 1 < self.double_ext.len() {
                 self.double_ext[ply + 1] = self.double_ext[ply] + (extension - 1).max(0);
             }
-            let fail_high_reduction = (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32;
+            let fail_high_reduction =
+                (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32 * self.p.fail_high_reduction;
             let new_depth = depth - 1 + extension - fail_high_reduction;
 
             self.shared.tt.prefetch(self.board.hash_after(pos));
@@ -1418,12 +1432,12 @@ impl<'a> Worker<'a> {
                 let mut r = 0;
                 if depth >= self.p.lmr_depth && !four {
                     r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
-                    r += cut_node as i32;
-                    r -= tt_pv as i32 + improving as i32;
+                    r += cut_node as i32 * self.p.lmr_cut_node;
+                    r -= tt_pv as i32 * self.p.lmr_tt_pv + improving as i32 * self.p.lmr_improving;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
                     // Our threes are reduced a ply less; blocks of the
                     // opponent's threes as much as quiet moves.
-                    r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32;
+                    r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32 * self.p.lmr_threat;
                     if useless {
                         let reach = self.p.useless_distance;
                         let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > reach);
