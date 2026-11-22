@@ -236,11 +236,16 @@ const EMPTY_CELL: Cell = Cell {
     flags: [0; 2],
 };
 
-/// Which empty cells near the stones are candidate moves, Rapfi's
-/// `candidate_range`: every cell within `square` steps of a stone in both
-/// directions, plus those up to `line` steps away along the eight lines.
+/// Which empty cells near the stones are candidate moves, as Rapfi's
+/// `candidate_range` (and two narrower ranges of Tengen's own): every cell
+/// within `square` steps of a stone in both directions, plus those up to
+/// `line` steps away along the eight lines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateRange {
+    /// The 3x3 square and two steps along the lines.
+    Square1Line2,
+    /// The 3x3 square and three steps along the lines.
+    Square1Line3,
     /// The 5x5 square.
     Square2,
     /// The 5x5 square and three steps along the lines.
@@ -255,7 +260,9 @@ pub enum CandidateRange {
 
 impl CandidateRange {
     /// Every range, in increasing size.
-    pub const ALL: [CandidateRange; 5] = [
+    pub const ALL: [CandidateRange; 7] = [
+        CandidateRange::Square1Line2,
+        CandidateRange::Square1Line3,
         CandidateRange::Square2,
         CandidateRange::Square2Line3,
         CandidateRange::Square3,
@@ -266,6 +273,8 @@ impl CandidateRange {
     /// The name Rapfi's configuration uses, such as `square2_line3`.
     pub fn name(self) -> &'static str {
         match self {
+            CandidateRange::Square1Line2 => "square1_line2",
+            CandidateRange::Square1Line3 => "square1_line3",
             CandidateRange::Square2 => "square2",
             CandidateRange::Square2Line3 => "square2_line3",
             CandidateRange::Square3 => "square3",
@@ -282,6 +291,8 @@ impl CandidateRange {
     /// Steps in the square, and along the lines.
     const fn reach(self) -> (i8, i8) {
         match self {
+            CandidateRange::Square1Line2 => (1, 2),
+            CandidateRange::Square1Line3 => (1, 3),
             CandidateRange::Square2 => (2, 2),
             CandidateRange::Square2Line3 => (2, 3),
             CandidateRange::Square3 => (3, 3),
@@ -322,7 +333,9 @@ impl CandidateRange {
             }
             rows
         }
-        const TABLES: [[u64; CAND_ROWS]; 5] = [
+        const TABLES: [[u64; CAND_ROWS]; 7] = [
+            stencil(CandidateRange::Square1Line2),
+            stencil(CandidateRange::Square1Line3),
             stencil(CandidateRange::Square2),
             stencil(CandidateRange::Square2Line3),
             stencil(CandidateRange::Square3),
@@ -1816,7 +1829,7 @@ pub(crate) mod tests {
 
     #[test]
     fn candidate_ranges_match_rapfi() {
-        for (range, cells) in CandidateRange::ALL.into_iter().zip([24, 32, 48, 56, 80]) {
+        for (range, cells) in CandidateRange::ALL.into_iter().zip([16, 24, 24, 32, 48, 56, 80]) {
             let mut board = Board::with_candidates(15, Rule::Freestyle, range);
             board.play(Pos::new(7, 7));
             assert_eq!(board.candidates().count(), cells, "{}", range.name());
