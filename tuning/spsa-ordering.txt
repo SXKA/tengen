@@ -1,0 +1,15 @@
+# Search parameters for tengen-spsa: name start min max c_end r_end.
+# Move ordering, histories, aspiration windows, the transposition table's
+# replacement and the quiescence depth. Starts are the defaults.
+killer_bonus         300     0   1200    30     0.002
+counter_bonus        150     0    800    20     0.002
+attack_history_div    16     4     64     2     0.002
+history_div           32     8    128     3     0.002
+history_bonus          8     2     24     1     0.002
+history_bonus_max   3200  1000  10000   300     0.002
+history_max        16384  4000  32000  1500     0.002
+aspiration            19     5     80     3     0.002
+aspiration_depth       4     2      8     0.7   0.002
+tt_keep_depth          2     0      6     0.6   0.002
+tt_age_weight          4     0     12     0.8   0.002
+qsearch_plies         24     8     40     2     0.002
