@@ -5,8 +5,11 @@
 //! `SWAP2BOARD` opening.
 //!
 //! Also runs `pbrain-tengen bench [depth]` to print the benchmark node count.
-//! `--weights FILE` replaces the built-in evaluation weights, and
-//! `--params name=value,...` changes search parameters (both for tuning).
+//! `--weights FILE` replaces the built-in evaluation weights,
+//! `--params name=value,...` changes search parameters (both for tuning),
+//! and `--candidates RANGE` the candidate moves, as Rapfi's
+//! `candidate_range` (`square2`, `square2_line3`, `square3`,
+//! `square3_line4` or `square4`).
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
@@ -368,7 +371,7 @@ fn read_stones(input: &mut Input) -> Option<Vec<(usize, usize, u8)>> {
 
 /// The same position under another rule.
 fn with_rule(board: &Board, rule: Rule) -> Board {
-    let mut out = Board::with_rule(board.size(), rule);
+    let mut out = Board::with_candidates(board.size(), rule, board.candidate_range());
     for pos in board.walls() {
         out.place_wall(pos);
     }
@@ -457,6 +460,18 @@ fn main() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("--weights {path}: {e}");
+                std::process::exit(2);
+            }
+        }
+        args.drain(i..(i + 2).min(args.len()));
+    }
+    if let Some(i) = args.iter().position(|a| a == "--candidates") {
+        let name = args.get(i + 1).cloned().unwrap_or_default();
+        match tengen_engine::CandidateRange::parse(&name) {
+            Some(range) => tengen_engine::board::set_default_candidate_range(range),
+            None => {
+                let names: Vec<_> = tengen_engine::CandidateRange::ALL.iter().map(|r| r.name()).collect();
+                eprintln!("--candidates {name}: expected one of {}", names.join(", "));
                 std::process::exit(2);
             }
         }

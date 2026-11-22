@@ -9,6 +9,6 @@ pub mod rule;
 pub mod search;
 pub mod tt;
 
-pub use board::{Board, Color, Pos};
+pub use board::{Board, CandidateRange, Color, Pos};
 pub use rule::Rule;
 pub use search::{Engine, Info, Limits, SearchResult};

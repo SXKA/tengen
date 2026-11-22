@@ -236,29 +236,119 @@ const EMPTY_CELL: Cell = Cell {
     flags: [0; 2],
 };
 
-/// Offsets (dx, dy) of cells that become candidates around a stone: the 5x5
-/// square plus the cells three steps away along the eight lines.
-const NEAR: [(i8, i8); 32] = {
-    let mut out = [(0i8, 0i8); 32];
-    let mut n = 0;
-    let mut dy = -3i8;
-    while dy <= 3 {
-        let mut dx = -3i8;
-        while dx <= 3 {
-            let (ax, ay) = (dx.unsigned_abs(), dy.unsigned_abs());
-            let square = ax <= 2 && ay <= 2;
-            let line = (ax == 3 || ay == 3) && (ax == 0 || ay == 0 || ax == ay);
-            if !(dx == 0 && dy == 0) && (square || line) {
-                out[n] = (dx, dy);
-                n += 1;
-            }
-            dx += 1;
+/// Which empty cells near the stones are candidate moves, Rapfi's
+/// `candidate_range`: every cell within `square` steps of a stone in both
+/// directions, plus those up to `line` steps away along the eight lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CandidateRange {
+    /// The 5x5 square.
+    Square2,
+    /// The 5x5 square and three steps along the lines.
+    Square2Line3,
+    /// The 7x7 square.
+    Square3,
+    /// The 7x7 square and four steps along the lines.
+    Square3Line4,
+    /// The 9x9 square.
+    Square4,
+}
+
+impl CandidateRange {
+    /// Every range, in increasing size.
+    pub const ALL: [CandidateRange; 5] = [
+        CandidateRange::Square2,
+        CandidateRange::Square2Line3,
+        CandidateRange::Square3,
+        CandidateRange::Square3Line4,
+        CandidateRange::Square4,
+    ];
+
+    /// The name Rapfi's configuration uses, such as `square2_line3`.
+    pub fn name(self) -> &'static str {
+        match self {
+            CandidateRange::Square2 => "square2",
+            CandidateRange::Square2Line3 => "square2_line3",
+            CandidateRange::Square3 => "square3",
+            CandidateRange::Square3Line4 => "square3_line4",
+            CandidateRange::Square4 => "square4",
         }
-        dy += 1;
     }
-    assert!(n == 32);
-    out
-};
+
+    /// The range with this [`name`](CandidateRange::name).
+    pub fn parse(text: &str) -> Option<CandidateRange> {
+        CandidateRange::ALL.into_iter().find(|r| r.name() == text.trim())
+    }
+
+    /// Steps in the square, and along the lines.
+    const fn reach(self) -> (i8, i8) {
+        match self {
+            CandidateRange::Square2 => (2, 2),
+            CandidateRange::Square2Line3 => (2, 3),
+            CandidateRange::Square3 => (3, 3),
+            CandidateRange::Square3Line4 => (3, 4),
+            CandidateRange::Square4 => (4, 4),
+        }
+    }
+
+    /// Whether a stone makes the cell (dx, dy) away a candidate.
+    pub const fn contains(self, dx: i8, dy: i8) -> bool {
+        let (square, line) = self.reach();
+        let (ax, ay) = (dx.unsigned_abs() as i8, dy.unsigned_abs() as i8);
+        let on_line = ax == 0 || ay == 0 || ax == ay;
+        !(dx == 0 && dy == 0) && ((ax <= square && ay <= square) || (on_line && ax <= line && ay <= line))
+    }
+
+    /// How far from a stone its candidates reach.
+    fn radius(self) -> usize {
+        let (square, line) = self.reach();
+        square.max(line) as usize
+    }
+
+    /// The stencil as a bit mask per row offset -MAX_REACH..=MAX_REACH,
+    /// bit dx + MAX_REACH.
+    fn rows(self) -> &'static [u64; CAND_ROWS] {
+        const fn stencil(range: CandidateRange) -> [u64; CAND_ROWS] {
+            let mut rows = [0u64; CAND_ROWS];
+            let mut dy = -MAX_REACH;
+            while dy <= MAX_REACH {
+                let mut dx = -MAX_REACH;
+                while dx <= MAX_REACH {
+                    if range.contains(dx, dy) {
+                        rows[(dy + MAX_REACH) as usize] |= 1 << (dx + MAX_REACH);
+                    }
+                    dx += 1;
+                }
+                dy += 1;
+            }
+            rows
+        }
+        const TABLES: [[u64; CAND_ROWS]; 5] = [
+            stencil(CandidateRange::Square2),
+            stencil(CandidateRange::Square2Line3),
+            stencil(CandidateRange::Square3),
+            stencil(CandidateRange::Square3Line4),
+            stencil(CandidateRange::Square4),
+        ];
+        &TABLES[self as usize]
+    }
+}
+
+/// The farthest any [`CandidateRange`] reaches.
+const MAX_REACH: i8 = 4;
+/// Candidate rows a move can change.
+const CAND_ROWS: usize = 2 * MAX_REACH as usize + 1;
+
+static DEFAULT_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(CandidateRange::Square2Line3 as u8);
+
+/// The candidate range new boards get.
+pub fn default_candidate_range() -> CandidateRange {
+    CandidateRange::ALL[DEFAULT_RANGE.load(std::sync::atomic::Ordering::Relaxed) as usize]
+}
+
+/// Give new boards `range`.
+pub fn set_default_candidate_range(range: CandidateRange) {
+    DEFAULT_RANGE.store(range as u8, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Undo information for one move.
 #[derive(Clone, Copy)]
@@ -272,7 +362,7 @@ struct Undo {
     p4_count: [[u16; Pattern4::COUNT]; 2],
     windows: [[i16; 6]; 2],
     /// Candidate rows `pos.y - 3 ..= pos.y + 3` before the move.
-    cand_rows: [u32; 7],
+    cand_rows: [u32; CAND_ROWS],
 }
 
 /// Zobrist keys, derived deterministically so every board agrees.
@@ -342,6 +432,7 @@ pub struct Board {
     /// undoing a move copies them back instead of recomputing patterns.
     journal: Vec<(u16, Cell)>,
     area: Area,
+    range: CandidateRange,
     /// Candidate cells ([`Board::is_candidate`]), one bit per column, by
     /// row: kept with each move so listing them skips the scan.
     cand: [u32; MAX_SIZE],
@@ -364,8 +455,14 @@ impl Board {
         Board::with_rule(size, Rule::Freestyle)
     }
 
-    /// An empty board with `size` rows and columns (5 to 20) for `rule`.
+    /// An empty board with `size` rows and columns (5 to 20) for `rule`,
+    /// with the [default candidate range](default_candidate_range).
     pub fn with_rule(size: usize, rule: Rule) -> Board {
+        Board::with_candidates(size, rule, default_candidate_range())
+    }
+
+    /// An empty board for `rule` whose candidate moves are `range`.
+    pub fn with_candidates(size: usize, rule: Rule, range: CandidateRange) -> Board {
         assert!((5..=MAX_SIZE).contains(&size), "unsupported board size {size}");
         let large = LineTable::get(rule, true)
             .zip(LineTable::get(rule, false))
@@ -389,6 +486,7 @@ impl Board {
             history: Vec::with_capacity(size * size),
             journal: Vec::with_capacity(40 * size * size),
             area: Area::empty(),
+            range,
             cand: [0; MAX_SIZE],
             hash: zobrist().rule[rule.index()],
             value: [0; 2],
@@ -720,6 +818,11 @@ impl Board {
         self.value_late[color.index()]
     }
 
+    /// Which cells near the stones are candidates.
+    pub fn candidate_range(&self) -> CandidateRange {
+        self.range
+    }
+
     /// Rectangle containing every candidate move.
     #[inline]
     pub fn area(&self) -> Area {
@@ -761,31 +864,24 @@ impl Board {
         }
     }
 
-    /// After a stone on `pos`: every empty cell of its [`NEAR`] stencil is
-    /// now a candidate, and `pos` no longer is.
+    /// After a stone on `pos`: every empty cell its candidate range covers
+    /// is now a candidate, and `pos` no longer is.
     #[inline]
     fn add_candidates(&mut self, pos: Pos) {
-        // NEAR as columns by row offset -3..=3, bit dx + 3.
-        const ROWS: [u64; 7] = {
-            let mut rows = [0u64; 7];
-            let mut i = 0;
-            while i < NEAR.len() {
-                let (dx, dy) = NEAR[i];
-                rows[(dy + 3) as usize] |= 1 << (dx + 3);
-                i += 1;
-            }
-            rows
-        };
+        const R: isize = MAX_REACH as isize;
         let (px, py) = (pos.x(), pos.y() as isize);
         let full = (1u64 << self.size) - 1;
-        for (i, &stencil) in ROWS.iter().enumerate() {
-            let y = py + i as isize - 3;
+        for (i, &stencil) in self.range.rows().iter().enumerate() {
+            if stencil == 0 {
+                continue;
+            }
+            let y = py + i as isize - R;
             if !(0..self.size as isize).contains(&y) {
                 continue;
             }
             let y = y as usize;
             let occupied = (self.lines[0][0][y] | self.lines[1][0][y] | self.walls[0][y]) as u64 >> PAD;
-            let mask = ((stencil << px) >> 3) & full & !occupied;
+            let mask = ((stencil << px) >> R) & full & !occupied;
             self.cand[y] |= mask as u32;
         }
         self.cand[pos.y()] &= !(1u32 << px);
@@ -848,10 +944,10 @@ impl Board {
             p4_count: self.p4_count,
             windows: self.windows,
             cand_rows: if pos == Pos::NONE {
-                [0; 7]
+                [0; CAND_ROWS]
             } else {
                 std::array::from_fn(|i| {
-                    let y = pos.y() as isize + i as isize - 3;
+                    let y = pos.y() as isize + i as isize - MAX_REACH as isize;
                     if (0..self.size as isize).contains(&y) {
                         self.cand[y as usize]
                     } else {
@@ -896,7 +992,7 @@ impl Board {
         self.windows = undo.windows;
         self.area = undo.area;
         for (i, &row) in undo.cand_rows.iter().enumerate() {
-            let y = pos.y() as isize + i as isize - 3;
+            let y = pos.y() as isize + i as isize - MAX_REACH as isize;
             if (0..self.size as isize).contains(&y) {
                 self.cand[y as usize] = row;
             }
@@ -1288,7 +1384,7 @@ impl Board {
     }
 
     fn extend_area(&mut self, pos: Pos) {
-        let r = 3;
+        let r = self.range.radius();
         let max = self.size - 1;
         let (x, y) = (pos.x(), pos.y());
         let a = &mut self.area;
@@ -1494,7 +1590,7 @@ pub(crate) mod tests {
                 let p = Pos::new(x, y);
                 let near = board.moves().any(|m| {
                     let (dx, dy) = (p.x() as i8 - m.x() as i8, p.y() as i8 - m.y() as i8);
-                    NEAR.contains(&(dx, dy))
+                    board.range.contains(dx, dy)
                 });
                 assert_eq!(board.is_candidate(p), board.is_empty(p) && near, "candidate {p:?}");
             }
@@ -1716,6 +1812,20 @@ pub(crate) mod tests {
         assert_eq!(board.p4(Pos::new(0, 10), Color::White), Pattern4::AFive);
         assert_eq!(board.p4_count(Color::White, Pattern4::AFive), 1);
         assert!(board.to_string().contains('['));
+    }
+
+    #[test]
+    fn candidate_ranges_match_rapfi() {
+        for (range, cells) in CandidateRange::ALL.into_iter().zip([24, 32, 48, 56, 80]) {
+            let mut board = Board::with_candidates(15, Rule::Freestyle, range);
+            board.play(Pos::new(7, 7));
+            assert_eq!(board.candidates().count(), cells, "{}", range.name());
+            assert_eq!(CandidateRange::parse(range.name()), Some(range));
+            board.play(Pos::new(0, 0));
+            board.undo();
+            board.undo();
+            assert_eq!(board.candidates().count(), 0, "{}", range.name());
+        }
     }
 
     #[test]

@@ -476,82 +476,139 @@ fn reductions() -> &'static [[u8; 64]; 64] {
     })
 }
 
-/// Search constants that self-play tuning may change (see `tengen-spsa`).
-/// The defaults are the values the engine plays with.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Params {
-    /// Reverse futility pruning: deepest depth, margin per ply, and how
-    /// much less margin an improving position needs.
-    pub rfp_depth: i32,
-    pub rfp_margin: i32,
-    pub rfp_improving: i32,
-    /// Razoring: deepest depth, base margin and margin per ply.
-    pub razor_depth: i32,
-    pub razor_base: i32,
-    pub razor_margin: i32,
-    /// Futility pruning of quiet moves: deepest depth, base margin and
-    /// margin per ply.
-    pub futility_depth: i32,
-    pub futility_base: i32,
-    pub futility_margin: i32,
-    /// Late move pruning starts after `lmp_base + depth²` moves.
-    pub lmp_base: i32,
-    /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`,
-    /// and history points per ply less.
-    pub lmr_base: i32,
-    pub lmr_scale: i32,
-    pub lmr_history: i32,
-    /// Fail-high reduction: static evaluation above beta by this much per
-    /// ply.
-    pub fail_high_margin: i32,
-    /// First aspiration window half-width.
-    pub aspiration: i32,
+/// Defines [`Params`]: each field with its documentation and default.
+macro_rules! params {
+    ($($(#[$doc:meta])* $name:ident = $default:expr,)*) => {
+        /// Search constants that self-play tuning may change (see
+        /// `tengen-spsa`). The defaults are the values the engine plays with.
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        pub struct Params {
+            $($(#[$doc])* pub $name: i32,)*
+        }
+
+        impl Default for Params {
+            fn default() -> Params {
+                Params { $($name: $default,)* }
+            }
+        }
+
+        impl Params {
+            /// Every parameter with its name, for parsing and printing.
+            fn fields(&mut self) -> Vec<(&'static str, &mut i32)> {
+                vec![$((stringify!($name), &mut self.$name),)*]
+            }
+        }
+    };
 }
 
-impl Default for Params {
-    fn default() -> Params {
-        Params {
-            rfp_depth: 7,
-            rfp_margin: 59,
-            rfp_improving: 29,
-            razor_depth: 3,
-            razor_base: 154,
-            razor_margin: 113,
-            futility_depth: 3,
-            futility_base: 117,
-            futility_margin: 104,
-            lmp_base: 5,
-            lmr_base: 62,
-            lmr_scale: 104,
-            lmr_history: 5873,
-            fail_high_margin: 18,
-            aspiration: 19,
-        }
-    }
+params! {
+    /// Reverse futility pruning: deepest depth.
+    rfp_depth = 7,
+    /// Reverse futility pruning: margin per ply.
+    rfp_margin = 59,
+    /// Reverse futility pruning: how much less margin an improving position
+    /// needs.
+    rfp_improving = 29,
+    /// Razoring: deepest depth.
+    razor_depth = 3,
+    /// Razoring: base margin.
+    razor_base = 154,
+    /// Razoring: margin per ply.
+    razor_margin = 113,
+    /// Futility pruning of quiet moves: deepest depth.
+    futility_depth = 3,
+    /// Futility pruning of quiet moves: base margin.
+    futility_base = 117,
+    /// Futility pruning of quiet moves: margin per ply.
+    futility_margin = 104,
+    /// Late move pruning starts after `(lmp_base + depth^(lmp_power / 100))
+    /// / (2 - improving)` moves.
+    lmp_base = 5,
+    /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`.
+    lmr_base = 62,
+    /// See `lmr_base`.
+    lmr_scale = 104,
+    /// Late move reductions: history points per ply less.
+    lmr_history = 5873,
+    /// Fail-high reduction: static evaluation above beta by this much per
+    /// ply.
+    fail_high_margin = 18,
+    /// First aspiration window half-width.
+    aspiration = 19,
+    /// Aspiration windows from this depth on.
+    aspiration_depth = 4,
+    /// A full window once the aspiration half-width exceeds this.
+    aspiration_max = 1000,
+    /// Root late move reductions: from this depth, and from this move on.
+    root_lmr_depth = 3,
+    /// See `root_lmr_depth`.
+    root_lmr_moves = 3,
+    /// Internal iterative reduction: from this depth on.
+    iir_depth = 4,
+    /// Move ordering: bonus of a killer move.
+    killer_bonus = 300,
+    /// Move ordering: bonus of the counter move.
+    counter_bonus = 150,
+    /// Move ordering: attack history divided by this.
+    attack_history_div = 16,
+    /// Move ordering: quiet history divided by this.
+    history_div = 32,
+    /// Late move pruning: exponent of the depth, in hundredths.
+    lmp_power = 130,
+    /// Against an open four, moves that block nothing far from both last
+    /// moves are pruned up to this depth.
+    distract_depth = 4,
+    /// Futility pruning: a move's ordering score counts up to this much.
+    futility_score_cap = 400,
+    /// Futility pruning: a move's ordering score divided by this.
+    futility_score_div = 4,
+    /// Singular extension: from this depth on.
+    se_depth = 7,
+    /// Singular extension: the table entry at most this much shallower.
+    se_tt_depth = 2,
+    /// Singular extension: margin below the table value, hundredths per
+    /// ply.
+    se_margin = 85,
+    /// Singular extension: more margin, hundredths per ply, at nodes that
+    /// were on the PV.
+    se_former_pv = 100,
+    /// Singular extension: the exclusion search reduced by this many
+    /// hundredths of the depth.
+    se_reduction = 55,
+    /// Double extension: margin below the singular beta, less
+    /// `min(depth * se_double_scale / 100, se_double_cap)`.
+    se_double_base = 29,
+    /// See `se_double_base`.
+    se_double_scale = 71,
+    /// See `se_double_base`.
+    se_double_cap = 4,
+    /// At most this many double extensions on a line.
+    se_double_max = 11,
+    /// Late move reductions: from this depth on.
+    lmr_depth = 3,
+    /// Useless defences: reduced more when farther than this from a last
+    /// move.
+    useless_distance = 4,
+    /// Useless defences: plies more when far from the opponent's last move.
+    useless_far_opponent = 2,
+    /// Useless defences: plies more when far from our own last move.
+    useless_far_own = 1,
+    /// History bonus: this times depth squared.
+    history_bonus = 8,
+    /// History bonus: at most this.
+    history_bonus_max = 3200,
+    /// Once alpha is raised, the rest a ply shallower above this depth.
+    alpha_reduce_min = 2,
+    /// See `alpha_reduce_min`: below this depth.
+    alpha_reduce_max = 12,
+    /// Quiescence: at most this many plies.
+    qsearch_plies = 24,
+    /// Quiescence: after this many plies, plain fours only after two fours
+    /// that each made more.
+    qsearch_plain_fours = 4,
 }
 
 impl Params {
-    /// Every parameter with its name, for parsing and printing.
-    fn fields(&mut self) -> [(&'static str, &mut i32); 15] {
-        [
-            ("rfp_depth", &mut self.rfp_depth),
-            ("rfp_margin", &mut self.rfp_margin),
-            ("rfp_improving", &mut self.rfp_improving),
-            ("razor_depth", &mut self.razor_depth),
-            ("razor_base", &mut self.razor_base),
-            ("razor_margin", &mut self.razor_margin),
-            ("futility_depth", &mut self.futility_depth),
-            ("futility_base", &mut self.futility_base),
-            ("futility_margin", &mut self.futility_margin),
-            ("lmp_base", &mut self.lmp_base),
-            ("lmr_base", &mut self.lmr_base),
-            ("lmr_scale", &mut self.lmr_scale),
-            ("lmr_history", &mut self.lmr_history),
-            ("fail_high_margin", &mut self.fail_high_margin),
-            ("aspiration", &mut self.aspiration),
-        ]
-    }
-
     /// The defaults with `name=value` changes, comma-separated.
     pub fn parse(text: &str) -> Result<Params, String> {
         let mut params = Params::default();
@@ -769,7 +826,7 @@ impl<'a> Worker<'a> {
             total_changes *= 0.5;
 
             let mut delta = self.p.aspiration;
-            let (mut alpha, mut beta) = if depth >= 4 && value.abs() < MATE_BOUND {
+            let (mut alpha, mut beta) = if depth >= self.p.aspiration_depth && value.abs() < MATE_BOUND {
                 (value - delta, value + delta)
             } else {
                 (-INFINITE, INFINITE)
@@ -790,7 +847,7 @@ impl<'a> Worker<'a> {
                     break v;
                 }
                 delta += delta;
-                if delta > 1000 {
+                if delta > self.p.aspiration_max {
                     (alpha, beta) = (-INFINITE, INFINITE);
                 }
             };
@@ -879,7 +936,7 @@ impl<'a> Worker<'a> {
             let v = if i == 0 {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
             } else {
-                let r = if depth >= 3 && i >= 3 && !tactical {
+                let r = if depth >= self.p.root_lmr_depth && i >= self.p.root_lmr_moves.max(0) as usize && !tactical {
                     (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1).clamp(0, depth - 2)
                 } else {
                     0
@@ -1053,7 +1110,7 @@ impl<'a> Worker<'a> {
         }
 
         // Internal iterative reduction: no move to try first, search less.
-        let mut depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() {
+        let mut depth = if (PV || cut_node) && depth >= self.p.iir_depth && tt_move.is_none() {
             depth - 1
         } else {
             depth
@@ -1087,15 +1144,15 @@ impl<'a> Worker<'a> {
                 m.score = i32::MAX;
             } else {
                 if killers.contains(&m.pos) {
-                    m.score += 300;
+                    m.score += self.p.killer_bonus;
                 }
                 if m.pos == counter.0 && counter.1 <= self.board.p4(m.pos, us) {
-                    m.score += 150;
+                    m.score += self.p.counter_bonus;
                 }
                 if self.board.p4(m.pos, us) >= Pattern4::HFlex3 {
-                    m.score += self.attack_history[us as usize][m.pos.index()] / 16;
+                    m.score += self.attack_history[us as usize][m.pos.index()] / self.p.attack_history_div.max(1);
                 } else {
-                    m.score += self.history[us as usize][m.pos.index()] / 32;
+                    m.score += self.history[us as usize][m.pos.index()] / self.p.history_div.max(1);
                 }
             }
         }
@@ -1119,7 +1176,7 @@ impl<'a> Worker<'a> {
         let mut attack_count = 0;
         // Rapfi's move-count pruning: the limit grows as depth^1.3, so it
         // keeps pruning at every depth, not only near the leaves.
-        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(1.3) as i32) / (2 - improving as i32);
+        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32) / (2 - improving as i32);
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
@@ -1155,7 +1212,7 @@ impl<'a> Worker<'a> {
             // Rapfi: against an open four, near the leaves, a move that does
             // not block it and is far from both last moves only delays.
             if in_threat
-                && depth <= 4
+                && depth <= self.p.distract_depth
                 && best > -MATE_BOUND
                 && self.board.p4(pos, them) < Pattern4::EBlock4
                 && self.board.recent_move(0).is_some_and(|m| chebyshev(pos, m) > 4)
@@ -1170,7 +1227,8 @@ impl<'a> Worker<'a> {
                 // Futility pruning of quiet moves near the leaves.
                 let p = &self.p;
                 if depth <= p.futility_depth
-                    && static_eval + p.futility_base + p.futility_margin * depth + m.score.min(400) / 4 <= alpha
+                    && static_eval + p.futility_base + p.futility_margin * depth + m.score.min(p.futility_score_cap) / p.futility_score_div.max(1)
+                        <= alpha
                 {
                     continue;
                 }
@@ -1183,19 +1241,19 @@ impl<'a> Worker<'a> {
             // the PV). If another move fails high above beta too, cut
             // (multi-cut); if only the table value is above beta, reduce.
             if extension == 0
-                && depth >= 7
+                && depth >= self.p.se_depth
                 && Some(pos) == tt_move
                 && excluded == Pos::NONE
                 && ply < 2 * self.root_depth as usize
                 && let Some(e) = tte
-                && e.depth >= depth - 2
+                && e.depth >= depth - self.p.se_tt_depth
                 && e.bound != Bound::Upper
                 && e.value.abs() < MATE_BOUND
             {
                 let former_pv = (!PV && tt_pv) as i32;
                 let tt_value = value_from_tt(e.value, ply);
-                let singular_beta = tt_value - depth * (85 + 100 * former_pv) / 100;
-                let singular_depth = depth - (depth * 55 / 100 - former_pv);
+                let singular_beta = tt_value - depth * (self.p.se_margin + self.p.se_former_pv * former_pv) / 100;
+                let singular_depth = depth - (depth * self.p.se_reduction / 100 - former_pv);
                 self.excluded[ply] = pos;
                 let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
                 self.excluded[ply] = Pos::NONE;
@@ -1204,8 +1262,8 @@ impl<'a> Worker<'a> {
                     return 0;
                 }
                 if v < singular_beta {
-                    let double_margin = 29 - (depth * 71 / 100).min(4);
-                    extension = if !PV && v < singular_beta - double_margin && self.double_ext[ply] < 11 {
+                    let double_margin = self.p.se_double_base - (depth * self.p.se_double_scale / 100).min(self.p.se_double_cap);
+                    extension = if !PV && v < singular_beta - double_margin && self.double_ext[ply] < self.p.se_double_max {
                         2
                     } else {
                         1
@@ -1234,7 +1292,7 @@ impl<'a> Worker<'a> {
                 };
             } else {
                 let mut r = 0;
-                if depth >= 3 && !four {
+                if depth >= self.p.lmr_depth && !four {
                     r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
                     r += cut_node as i32;
                     r -= tt_pv as i32 + improving as i32;
@@ -1243,8 +1301,10 @@ impl<'a> Worker<'a> {
                     // opponent's threes as much as quiet moves.
                     r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32;
                     if useless {
-                        let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > 4);
-                        r += 2 * far(self.board.recent_move(0)) as i32 + far(self.board.recent_move(1)) as i32;
+                        let reach = self.p.useless_distance;
+                        let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > reach);
+                        r += self.p.useless_far_opponent * far(self.board.recent_move(0)) as i32
+                            + self.p.useless_far_own * far(self.board.recent_move(1)) as i32;
                     }
                     r = r.clamp(0, new_depth - 1);
                 }
@@ -1278,7 +1338,7 @@ impl<'a> Worker<'a> {
                         }
                         let attack = self.board.p4(pos, us) >= Pattern4::HFlex3;
                         if attack {
-                            let bonus = (depth * depth * 8).min(3200);
+                            let bonus = (depth * depth * self.p.history_bonus).min(self.p.history_bonus_max);
                             self.attack_history_update(us as usize, pos, bonus);
                             for &q in &attacks[..attack_count] {
                                 self.attack_history_update(us as usize, q, -bonus);
@@ -1287,7 +1347,7 @@ impl<'a> Worker<'a> {
                             // Blocks and defences against a four-three learn
                             // history too, as in Rapfi; killers stay quiet
                             // moves only.
-                            let bonus = (depth * depth * 8).min(3200);
+                            let bonus = (depth * depth * self.p.history_bonus).min(self.p.history_bonus_max);
                             self.history_update(us as usize, pos, bonus);
                             for &q in &quiets[..quiet_count] {
                                 self.history_update(us as usize, q, -bonus);
@@ -1301,7 +1361,7 @@ impl<'a> Worker<'a> {
                     alpha = v;
                     // Once a move has raised alpha, the rest are searched a
                     // ply shallower, as in Rapfi.
-                    if depth > 2 && depth < 12 && v.abs() < MATE_BOUND {
+                    if depth > self.p.alpha_reduce_min && depth < self.p.alpha_reduce_max && v.abs() < MATE_BOUND {
                         depth -= 1;
                     }
                 }
@@ -1389,7 +1449,7 @@ impl<'a> Worker<'a> {
         if board.p4_count(us, Pattern4::BFlex4) > 0 && board.p4_count_at_least(them, Pattern4::EBlock4) == 0 {
             return mate_in(ply + 3);
         }
-        if qply >= 24 {
+        if qply >= self.p.qsearch_plies.max(0) as usize {
             return stand;
         }
         let key = board.hash();
@@ -1420,7 +1480,7 @@ impl<'a> Worker<'a> {
         }
         // After two fours, plain fours only follow two fours that each made
         // more than a four; otherwise a four must come with more.
-        if qply >= 4 && (self.q_p4[ply - 2] < Pattern4::DBlock4Plus || self.q_p4[ply - 4] < Pattern4::DBlock4Plus) {
+        if qply >= self.p.qsearch_plain_fours.max(4) as usize && (self.q_p4[ply - 2] < Pattern4::DBlock4Plus || self.q_p4[ply - 4] < Pattern4::DBlock4Plus) {
             let board = &self.board;
             list.retain(|m| board.p4(m.pos, us) >= Pattern4::DBlock4Plus);
         }
