@@ -338,8 +338,7 @@ const MAX_REACH: i8 = 4;
 /// Candidate rows a move can change.
 const CAND_ROWS: usize = 2 * MAX_REACH as usize + 1;
 
-static DEFAULT_RANGE: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(CandidateRange::Square2Line3 as u8);
+static DEFAULT_RANGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(CandidateRange::Square2 as u8);
 
 /// The candidate range new boards get.
 pub fn default_candidate_range() -> CandidateRange {
@@ -1831,7 +1830,7 @@ pub(crate) mod tests {
 
     #[test]
     fn candidates_surround_stones() {
-        let mut board = Board::new(15);
+        let mut board = Board::with_candidates(15, Rule::Freestyle, CandidateRange::Square2Line3);
         assert_eq!(board.candidates().count(), 0);
         board.play(Pos::new(7, 7));
         assert_eq!(board.candidates().count(), 32);
