@@ -1239,7 +1239,9 @@ impl<'a> Worker<'a> {
                     r += cut_node as i32;
                     r -= tt_pv as i32 + improving as i32;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
-                    r -= tactical as i32;
+                    // Our threes are reduced a ply less; blocks of the
+                    // opponent's threes as much as quiet moves.
+                    r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32;
                     if useless {
                         let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > 4);
                         r += 2 * far(self.board.recent_move(0)) as i32 + far(self.board.recent_move(1)) as i32;
