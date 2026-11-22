@@ -59,11 +59,11 @@ fn value_to_tt(v: Value, ply: usize) -> Value {
 /// Whether `pos` is within two cells of `last`, or four along one of its
 /// lines (Rapfi's RANGE_SQUARE2_LINE4).
 #[inline]
-fn near_last(pos: Pos, last: Pos) -> bool {
+fn near_last(pos: Pos, last: Pos, square: i32, line: i32) -> bool {
     let dx = (pos.x() as i32 - last.x() as i32).abs();
     let dy = (pos.y() as i32 - last.y() as i32).abs();
     let d = dx.max(dy);
-    d <= 2 || (d <= 4 && (dx == 0 || dy == 0 || dx == dy))
+    d <= square || (d <= line && (dx == 0 || dy == 0 || dx == dy))
 }
 
 /// Chebyshev distance between two cells.
@@ -130,7 +130,7 @@ impl Limits {
     /// Use about `ms` milliseconds, never more.
     pub fn movetime(ms: f64) -> Limits {
         Limits {
-            soft_ms: Some(ms * 0.5),
+            soft_ms: Some(ms * scaled(params().time_movetime_soft, 1000.0)),
             hard_ms: Some(ms),
             ..Limits::default()
         }
@@ -141,22 +141,25 @@ impl Limits {
     /// Rapfi does: at most a seventh of the clock, and when the clock is
     /// short an optimum of a 22nd of it, less as the game goes on.
     pub fn for_clock(time_left_ms: f64, turn_ms: f64, empty_cells: usize, ply: usize) -> Limits {
+        let p = params();
         let moves_to_go = empty_cells.max(1) as f64;
-        let mut hard = time_left_ms / moves_to_go.min(7.0);
+        let mut hard = time_left_ms / moves_to_go.min(p.time_moves_hard as f64);
         if turn_ms > 0.0 {
             hard = hard.min(turn_ms);
         }
         // Leave room for process and protocol overhead.
-        let hard = (hard - 30.0).max(hard * 0.5).max(1.0);
+        let hard = (hard - p.time_overhead_ms as f64)
+            .max(hard * scaled(p.time_overhead_floor, 1000.0))
+            .max(1.0);
         // When the game clock could pay for a full turn on every remaining
         // move, there is nothing to save time for: keep deepening until
         // most of the turn is used. An unfinished iteration still counts
         // when it finds a better move.
-        let ample = turn_ms > 0.0 && turn_ms * moves_to_go.min(64.0) < time_left_ms;
-        let mut optimum = hard * 0.9;
+        let ample = turn_ms > 0.0 && turn_ms * moves_to_go.min(p.time_ample_moves as f64) < time_left_ms;
+        let mut optimum = hard * scaled(p.time_optimum, 1000.0);
         if !ample {
-            let by_match = time_left_ms / moves_to_go.min(16.0);
-            let by_turn = hard / 1.7 * move_importance(ply);
+            let by_match = time_left_ms / moves_to_go.min(p.time_match_moves as f64);
+            let by_turn = hard / scaled(p.time_turn_div, 100.0) * move_importance(ply);
             optimum = optimum.min(by_match).min(by_turn);
         }
         Limits {
@@ -170,10 +173,13 @@ impl Limits {
 
 /// Rapfi's weight of a move by game ply: early moves get a little more.
 fn move_importance(ply: usize) -> f64 {
+    let p = params();
     let ply = ply as f64;
-    let basic = (1.0 + ((ply - 50.0) / 8.0).exp()).powf(-0.08);
-    let opening = 0.1 * (-0.04 * ply).exp();
-    (basic + opening).max(0.01)
+    let center = p.time_importance_center as f64;
+    let width = p.time_importance_width as f64;
+    let basic = (1.0 + ((ply - center) / width).exp()).powf(-scaled(p.time_importance_power, 1000.0));
+    let opening = scaled(p.time_importance_opening, 1000.0) * (-scaled(p.time_importance_decay, 1000.0) * ply).exp();
+    (basic + opening).max(scaled(p.time_importance_min, 1000.0))
 }
 
 /// Progress report after each completed iteration.
@@ -603,9 +609,100 @@ params! {
     alpha_reduce_max = 12,
     /// Quiescence: at most this many plies.
     qsearch_plies = 24,
-    /// Quiescence: after this many plies, plain fours only after two fours
-    /// that each made more.
+    /// Quiescence: after this many plies (at least 4), plain fours only
+    /// after two fours that each made more.
     qsearch_plain_fours = 4,
+    /// Quiescence: fours within this many cells of the attacker's last
+    /// move in any direction (Rapfi's RANGE_SQUARE2_LINE4)...
+    qsearch_near_square = 2,
+    /// ...or this many along a line.
+    qsearch_near_line = 4,
+    /// Distraction pruning: farther than this from the opponent's last
+    /// move.
+    distract_opponent = 4,
+    /// Distraction pruning: farther than this from our own last move.
+    distract_own = 4,
+    /// Distraction pruning in renju: farther than this from our own last
+    /// move.
+    distract_own_renju = 5,
+    /// Extensions only within this many times the root depth in plies.
+    extension_plies = 2,
+    /// Histories saturate at this.
+    history_max = 16_384,
+    /// Root late move reductions: the table's value less this.
+    root_lmr_less = 1,
+    /// Transposition table: an entry is kept against a non-exact one this
+    /// many plies shallower from the same search.
+    tt_keep_depth = 2,
+    /// Transposition table: each search of age costs a victim this many
+    /// plies of worth.
+    tt_age_weight = 4,
+    /// Time: a fixed move time stops deepening after this many thousandths
+    /// of it.
+    time_movetime_soft = 500,
+    /// Time: at most the clock over this many moves for one move.
+    time_moves_hard = 7,
+    /// Time: milliseconds left for process and protocol overhead...
+    time_overhead_ms = 30,
+    /// ...but at least this many thousandths of the turn kept.
+    time_overhead_floor = 500,
+    /// Time: the clock is ample when it pays a full turn for this many
+    /// moves.
+    time_ample_moves = 64,
+    /// Time: the optimum is at most this many thousandths of the turn...
+    time_optimum = 900,
+    /// ...and of the clock over this many moves...
+    time_match_moves = 16,
+    /// ...and of the turn over this many hundredths, times the move's
+    /// importance.
+    time_turn_div = 170,
+    /// Move importance by ply: `(1 + exp((ply - center) / width))^-power`
+    /// (power in thousandths)...
+    time_importance_center = 50,
+    /// See `time_importance_center`.
+    time_importance_width = 8,
+    /// See `time_importance_center`.
+    time_importance_power = 80,
+    /// ...plus `opening * exp(-decay * ply)`, both in thousandths...
+    time_importance_opening = 100,
+    /// See `time_importance_opening`.
+    time_importance_decay = 40,
+    /// ...and at least this many thousandths.
+    time_importance_min = 10,
+    /// Time: more when the value falls: `falling_base + falling_slope *
+    /// drop`, in thousandths and ten-thousandths, clamped to thousandths
+    /// `falling_min..=falling_max`.
+    time_falling_base = 544,
+    /// See `time_falling_base`.
+    time_falling_slope = 32,
+    /// See `time_falling_base`.
+    time_falling_min = 500,
+    /// See `time_falling_base`.
+    time_falling_max = 1500,
+    /// Time: less, by ten-thousandths per ply, the longer the best move
+    /// has held.
+    time_stability = 125,
+    /// Time: the previous move's reduction carries over to this power, in
+    /// thousandths.
+    time_reduction_power = 528,
+    /// Time: more, in hundredths per change, when the best move changes.
+    time_instability = 200,
+    /// Time: at most the hard limit over `base + slope * depth^power`, all
+    /// in hundredths.
+    time_turn_base = 125,
+    /// See `time_turn_base`.
+    time_turn_slope = 2,
+    /// See `time_turn_base`.
+    time_turn_power = 140,
+    /// Time: best-move changes decay to this many thousandths each
+    /// iteration.
+    time_changes_decay = 500,
+}
+
+/// A parameter in units of 1 / `scale`.
+#[inline]
+fn scaled(value: i32, scale: f64) -> f64 {
+    value as f64 / scale
 }
 
 impl Params {
@@ -652,7 +749,6 @@ pub fn set_params(params: Params) -> Result<(), String> {
         .map_err(|_| "search parameters are already in use".to_string())
 }
 
-const HISTORY_MAX: i32 = 16_384;
 const NODE_CHECK: u64 = 1024;
 
 /// One search thread.
@@ -823,7 +919,7 @@ impl<'a> Worker<'a> {
             };
             self.root_depth = search_depth;
             self.seldepth = 0;
-            total_changes *= 0.5;
+            total_changes *= scaled(self.p.time_changes_decay, 1000.0);
 
             let mut delta = self.p.aspiration;
             let (mut alpha, mut beta) = if depth >= self.p.aspiration_depth && value.abs() < MATE_BOUND {
@@ -892,13 +988,20 @@ impl<'a> Worker<'a> {
                     let (prev_reduction, prev_value) = self.shared.prev_time;
                     // More time when the value is falling, less when it holds.
                     let dropped = prev_value.map_or(f64::INFINITY, |p| (p - value) as f64);
-                    let falling = (0.0032 * dropped + 0.544).clamp(0.5, 1.5);
+                    let p = &self.p;
+                    let falling = (scaled(p.time_falling_slope, 10000.0) * dropped
+                        + scaled(p.time_falling_base, 1000.0))
+                    .clamp(scaled(p.time_falling_min, 1000.0), scaled(p.time_falling_max, 1000.0));
                     // Less time the longer the best move has stayed the same.
-                    time_reduction = 1.0 + 0.0125 * (search_depth - last_change_depth) as f64;
-                    let reduction = prev_reduction.powf(0.528) / time_reduction;
-                    let instability = 1.0 + 2.0 * total_changes;
+                    time_reduction =
+                        1.0 + scaled(p.time_stability, 10000.0) * (search_depth - last_change_depth) as f64;
+                    let reduction = prev_reduction.powf(scaled(p.time_reduction_power, 1000.0)) / time_reduction;
+                    let instability = 1.0 + scaled(p.time_instability, 100.0) * total_changes;
                     let hard = limits.hard_ms.unwrap_or(f64::INFINITY);
-                    let max_turn = hard / (1.25 + 0.02 * (search_depth as f64).powf(1.4));
+                    let max_turn = hard
+                        / (scaled(p.time_turn_base, 100.0)
+                            + scaled(p.time_turn_slope, 100.0)
+                                * (search_depth as f64).powf(scaled(p.time_turn_power, 100.0)));
                     elapsed >= (optimum * instability * reduction * falling).min(max_turn)
                 }
                 Some(optimum) => elapsed >= optimum,
@@ -937,7 +1040,7 @@ impl<'a> Worker<'a> {
                 -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
             } else {
                 let r = if depth >= self.p.root_lmr_depth && i >= self.p.root_lmr_moves.max(0) as usize && !tactical {
-                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1).clamp(0, depth - 2)
+                    (reductions()[depth.min(63) as usize][i.min(63)] as i32 - self.p.root_lmr_less).clamp(0, depth - 2)
                 } else {
                     0
                 };
@@ -987,14 +1090,21 @@ impl<'a> Worker<'a> {
         line.extend_from_slice(&tail[0]);
     }
 
+    /// Extensions stop beyond this ply.
+    fn extension_limit(&self) -> usize {
+        self.p.extension_plies.max(0) as usize * self.root_depth.max(0) as usize
+    }
+
     fn history_update(&mut self, color: usize, pos: Pos, bonus: i32) {
+        let max = self.p.history_max.max(1);
         let h = &mut self.history[color][pos.index()];
-        *h += bonus - *h * bonus.abs() / HISTORY_MAX;
+        *h += bonus - *h * bonus.abs() / max;
     }
 
     fn attack_history_update(&mut self, color: usize, pos: Pos, bonus: i32) {
+        let max = self.p.history_max.max(1);
         let h = &mut self.attack_history[color][pos.index()];
-        *h += bonus - *h * bonus.abs() / HISTORY_MAX;
+        *h += bonus - *h * bonus.abs() / max;
     }
 
     fn search<const PV: bool>(
@@ -1043,7 +1153,7 @@ impl<'a> Worker<'a> {
         let depth = if depth <= 0
             && opp_fives == 0
             && board.p4_count(them, Pattern4::BFlex4) > 0
-            && ply < 2 * self.root_depth as usize
+            && ply < self.extension_limit()
         {
             1
         } else {
@@ -1180,7 +1290,8 @@ impl<'a> Worker<'a> {
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
-        let distract_self = if self.board.rule() == Rule::Renju { 5 } else { 4 };
+        let distract_self = if self.board.rule() == Rule::Renju { self.p.distract_own_renju } else { self.p.distract_own };
+        let distract_opponent = self.p.distract_opponent;
         let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + self.p.fail_high_margin * depth;
 
         for (index, m) in list.iter().enumerate() {
@@ -1215,7 +1326,7 @@ impl<'a> Worker<'a> {
                 && depth <= self.p.distract_depth
                 && best > -MATE_BOUND
                 && self.board.p4(pos, them) < Pattern4::EBlock4
-                && self.board.recent_move(0).is_some_and(|m| chebyshev(pos, m) > 4)
+                && self.board.recent_move(0).is_some_and(|m| chebyshev(pos, m) > distract_opponent)
                 && self
                     .board
                     .recent_move(1)
@@ -1234,7 +1345,7 @@ impl<'a> Worker<'a> {
                 }
             }
 
-            let mut extension = (single_reply && ply < 2 * self.root_depth as usize) as i32;
+            let mut extension = (single_reply && ply < self.extension_limit()) as i32;
             // Rapfi's singular extension: if every other move fails low
             // against a margin below the table value, the table move is the
             // only good one and is extended (two plies when far below, off
@@ -1244,7 +1355,7 @@ impl<'a> Worker<'a> {
                 && depth >= self.p.se_depth
                 && Some(pos) == tt_move
                 && excluded == Pos::NONE
-                && ply < 2 * self.root_depth as usize
+                && ply < self.extension_limit()
                 && let Some(e) = tte
                 && e.depth >= depth - self.p.se_tt_depth
                 && e.bound != Bound::Upper
@@ -1476,7 +1587,8 @@ impl<'a> Worker<'a> {
         // Rapfi's quiescent VCF only continues next to the attacker's own
         // last move: within two cells, or four along a line.
         if let Some(last) = self.board.recent_move(1) {
-            list.retain(|m| near_last(m.pos, last));
+            let (square, line) = (self.p.qsearch_near_square, self.p.qsearch_near_line);
+            list.retain(|m| near_last(m.pos, last, square, line));
         }
         // After two fours, plain fours only follow two fours that each made
         // more than a four; otherwise a four must come with more.
@@ -1550,6 +1662,16 @@ mod tests {
 
     fn best(board: &Board, depth: i32) -> SearchResult {
         Engine::new(16).search(board, &Limits::depth(depth), |_| {})
+    }
+
+    #[test]
+    fn every_param_parses_back() {
+        let text = Params::default().to_text();
+        assert_eq!(Params::parse(&text), Ok(Params::default()));
+        assert_eq!(text.split(',').count(), Params::default().fields().len());
+        let changed = Params::parse("time_optimum=850,tt_age_weight=3").unwrap();
+        assert_eq!((changed.time_optimum, changed.tt_age_weight), (850, 3));
+        assert!(Params::parse("no_such_param=1").is_err());
     }
 
     #[test]

@@ -84,15 +84,22 @@ struct Bucket {
 pub struct TranspositionTable {
     buckets: Box<[Bucket]>,
     generation: AtomicU8,
+    /// [`Params::tt_keep_depth`](crate::search::Params::tt_keep_depth).
+    keep_depth: i32,
+    /// [`Params::tt_age_weight`](crate::search::Params::tt_age_weight).
+    age_weight: i32,
 }
 
 impl TranspositionTable {
     /// A table using about `megabytes` of memory.
     pub fn new(megabytes: usize) -> TranspositionTable {
         let count = (megabytes.max(1) << 20) / std::mem::size_of::<Bucket>();
+        let p = crate::search::params();
         TranspositionTable {
             buckets: (0..count).map(|_| Bucket::default()).collect(),
             generation: AtomicU8::new(0),
+            keep_depth: p.tt_keep_depth,
+            age_weight: p.tt_age_weight,
         }
     }
 
@@ -170,7 +177,10 @@ impl TranspositionTable {
                 if entry.best_move.is_none() {
                     entry.best_move = old.best_move;
                 }
-                if entry.bound != Bound::Exact && old.depth > entry.depth + 2 && generation_of(data) == generation {
+                if entry.bound != Bound::Exact
+                    && old.depth > entry.depth + self.keep_depth
+                    && generation_of(data) == generation
+                {
                     return;
                 }
                 victim = slot;
@@ -180,7 +190,7 @@ impl TranspositionTable {
             let worth = if check == 0 && data == 0 {
                 i32::MIN
             } else {
-                TtEntry::unpack(data).depth - 4 * age
+                TtEntry::unpack(data).depth - self.age_weight * age
             };
             if worth < victim_worth {
                 victim_worth = worth;
