@@ -2,7 +2,7 @@
 # Reductions and extensions: late move reductions at the root and below,
 # internal iterative reduction, the alpha-raised depth window, useless
 # defences and singular extension. Starts are the defaults.
-lmr_base              62     0    150     8     0.002
+lmr_base             100     0    200     8     0.002
 lmr_scale            104    50    160     6     0.002
 lmr_history         5873  2000  20000   600     0.002
 lmr_depth              3     2      6     0.7   0.002
