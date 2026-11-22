@@ -1,0 +1,24 @@
+# Search parameters for tengen-spsa: name start min max c_end r_end.
+# Reductions and extensions: late move reductions at the root and below,
+# internal iterative reduction, the alpha-raised depth window, useless
+# defences and singular extension. Starts are the defaults.
+lmr_base              62     0    150     8     0.002
+lmr_scale            104    50    160     6     0.002
+lmr_history         5873  2000  20000   600     0.002
+lmr_depth              3     2      6     0.7   0.002
+root_lmr_depth         3     2      8     0.7   0.002
+root_lmr_moves         3     1     10     0.7   0.002
+root_lmr_less          1     0      3     0.5   0.002
+iir_depth              4     2     10     0.7   0.002
+alpha_reduce_min       2     1      6     0.7   0.002
+alpha_reduce_max      12     4     30     1.5   0.002
+useless_far_opponent   2     0      4     0.5   0.002
+useless_far_own        1     0      3     0.5   0.002
+se_depth               7     4     12     0.7   0.002
+se_tt_depth            2     0      5     0.6   0.002
+se_margin             85    20    250    10     0.002
+se_former_pv         100     0    250    12     0.002
+se_reduction          55    30     80     4     0.002
+se_double_base        29     0    120     5     0.002
+se_double_scale       71     0    200     8     0.002
+se_double_max         11     0     30     1.5   0.002

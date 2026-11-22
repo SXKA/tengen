@@ -1,12 +1,16 @@
 name: SPSA
 
-# Tune the search parameters listed in tuning/spsa.txt by self-play with
-# SPSA (see crates/arena/src/bin/spsa.rs). Start it from the Actions tab.
+# Tune the search parameters listed in a spec file (tuning/spsa*.txt) by
+# self-play with SPSA (see crates/arena/src/bin/spsa.rs). Start it from
+# the Actions tab.
 # The tuned values are in the run summary; check them with the SPRT
 # workflow before adopting them as the defaults in search.rs.
 on:
   workflow_dispatch:
     inputs:
+      spec:
+        description: Parameters to tune (tuning/spsa.txt, spsa-reductions.txt, spsa-ordering.txt)
+        default: tuning/spsa.txt
       pairs:
         description: Game pairs (the schedule assumes all are played)
         default: "12000"
@@ -43,7 +47,7 @@ jobs:
         run: |
           target/release/tengen-spsa \
             --brain target/release/pbrain-tengen \
-            --spec tuning/spsa.txt \
+            --spec "${{ inputs.spec }}" \
             --pairs ${{ inputs.pairs }} \
             --minutes ${{ inputs.minutes }} \
             --turn-ms ${{ inputs.turn_ms }} \
