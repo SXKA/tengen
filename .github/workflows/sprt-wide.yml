@@ -4,7 +4,9 @@ name: SPRT (parallel)
 # plays a fixed share of the games, then the results are pooled and the SPRT
 # bounds are checked once on the total. Checking only at the end makes the
 # test a little more conservative than the sequential one. Start it from the
-# Actions tab.
+# Actions tab. new_args and base_args are passed to each engine, so a change
+# of parameters (--params name=value,...) or candidates (--candidates RANGE)
+# can be tested from master without a branch.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +33,12 @@ on:
       match_ms:
         description: Milliseconds per game for each side (0 for no game clock)
         default: "0"
+      new_args:
+        description: Arguments for the new engine, e.g. --params lmr_base=80 (no spaces inside a value)
+        default: ""
+      base_args:
+        description: Arguments for the base engine
+        default: ""
       rule:
         description: Game rule (both versions must support it)
         type: choice
@@ -105,8 +113,8 @@ jobs:
           # Games come in pairs (colours swapped), so keep each share even.
           games=$(( ${{ inputs.games }} / ${{ inputs.shards }} / 2 * 2 ))
           dist/arena $openings \
-            --new dist/new \
-            --base dist/base \
+            --new "dist/new ${{ inputs.new_args }}" \
+            --base "dist/base ${{ inputs.base_args }}" \
             --games "$games" \
             --turn-ms ${{ inputs.turn_ms }} \
             --match-ms ${{ inputs.match_ms }} \
@@ -131,6 +139,8 @@ jobs:
         env:
           ELO0: ${{ inputs.elo0 }}
           ELO1: ${{ inputs.elo1 }}
+          NEW_ARGS: ${{ inputs.new_args }}
+          BASE_ARGS: ${{ inputs.base_args }}
         run: |
           python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
           # Same statistics as crates/arena/src/sprt.rs: pentanomial pair
@@ -160,6 +170,9 @@ jobs:
                      else "H0 accepted: no improvement" if llr <= lower else "inconclusive")
           print("## Tengen arena, pooled\n")
           print(f"{shards} shards, turn ${{ inputs.turn_ms }} ms, match ${{ inputs.match_ms }} ms, rule ${{ inputs.rule }}\n")
+          for name in ("NEW_ARGS", "BASE_ARGS"):
+              if os.environ.get(name):
+                  print(f"{name.split('_')[0].lower()} engine: `{os.environ[name]}`\n")
           print("| games | wins | draws | losses | Elo (95%) | pentanomial |")
           print("|---|---|---|---|---|---|")
           print(f"| {wins + draws + losses} | {wins} | {draws} | {losses} | {elo:+.1f} ± {err:.1f} | {counts} |")
