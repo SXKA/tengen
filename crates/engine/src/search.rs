@@ -22,6 +22,9 @@ use crate::pattern::Pattern4;
 use crate::rule::Rule;
 use crate::tt::{Bound, TranspositionTable, TtEntry};
 
+/// One ply of search depth, in the hundredths `Worker::search` counts.
+const PLY: i32 = 100;
+
 /// Score of a win on the next ply.
 pub const MATE: Value = 30_000;
 /// Scores at or beyond this are wins or losses.
@@ -877,19 +880,19 @@ impl<'a> Worker<'a> {
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let v = if i == 0 {
-                -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
+                -self.search::<true>(-beta, -alpha, (depth - 1) * PLY, 1, false)
             } else {
                 let r = if depth >= 3 && i >= 3 && !tactical {
                     (reductions()[depth.min(63) as usize][i.min(63)] as i32 - 1).clamp(0, depth - 2)
                 } else {
                     0
                 };
-                let mut v = -self.search::<false>(-alpha - 1, -alpha, depth - 1 - r, 1, true);
+                let mut v = -self.search::<false>(-alpha - 1, -alpha, (depth - 1 - r) * PLY, 1, true);
                 if v > alpha && r > 0 && !self.stopped() {
-                    v = -self.search::<false>(-alpha - 1, -alpha, depth - 1, 1, false);
+                    v = -self.search::<false>(-alpha - 1, -alpha, (depth - 1) * PLY, 1, false);
                 }
                 if v > alpha && !self.stopped() {
-                    v = -self.search::<true>(-beta, -alpha, depth - 1, 1, false);
+                    v = -self.search::<true>(-beta, -alpha, (depth - 1) * PLY, 1, false);
                 }
                 v
             };
@@ -940,11 +943,14 @@ impl<'a> Worker<'a> {
         *h += bonus - *h * bonus.abs() / HISTORY_MAX;
     }
 
+    /// `fdepth` is the remaining depth in hundredths of a ply, so that
+    /// reductions and extensions can be fractional, as in Rapfi; decisions
+    /// within the node use whole plies.
     fn search<const PV: bool>(
         &mut self,
         mut alpha: Value,
         mut beta: Value,
-        depth: i32,
+        fdepth: i32,
         ply: usize,
         cut_node: bool,
     ) -> Value {
@@ -983,18 +989,19 @@ impl<'a> Worker<'a> {
         }
         // An open three of the opponent at the horizon: search the defences
         // instead of standing pat in quiescence.
-        let depth = if depth <= 0
+        let fdepth = if fdepth <= 0
             && opp_fives == 0
             && board.p4_count(them, Pattern4::BFlex4) > 0
             && ply < 2 * self.root_depth as usize
         {
-            1
+            PLY
         } else {
-            depth
+            fdepth
         };
-        if depth <= 0 {
+        if fdepth <= 0 {
             return self.qsearch(alpha, beta, ply, 0);
         }
+        let depth = (fdepth / PLY).max(1);
 
         let key = board.hash();
         let excluded = self.excluded[ply];
@@ -1053,11 +1060,9 @@ impl<'a> Worker<'a> {
         }
 
         // Internal iterative reduction: no move to try first, search less.
-        let mut depth = if (PV || cut_node) && depth >= 4 && tt_move.is_none() {
-            depth - 1
-        } else {
-            depth
-        };
+        let iir = ((PV || cut_node) && depth >= 4 && tt_move.is_none()) as i32;
+        let mut depth = depth - iir;
+        let mut fdepth = fdepth - iir * PLY;
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         let kind = movegen::generate(&mut self.board, &mut list);
@@ -1197,7 +1202,7 @@ impl<'a> Worker<'a> {
                 let singular_beta = tt_value - depth * (85 + 100 * former_pv) / 100;
                 let singular_depth = depth - (depth * 55 / 100 - former_pv);
                 self.excluded[ply] = pos;
-                let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
+                let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth * PLY, ply, cut_node);
                 self.excluded[ply] = Pos::NONE;
                 if self.stopped() {
                     self.lists[ply] = list;
@@ -1221,16 +1226,17 @@ impl<'a> Worker<'a> {
                 self.double_ext[ply + 1] = self.double_ext[ply] + (extension - 1).max(0);
             }
             let fail_high_reduction = (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32;
-            let new_depth = depth - 1 + extension - fail_high_reduction;
+            let new_fdepth = fdepth - PLY + (extension - fail_high_reduction) * PLY;
+            let new_depth = new_fdepth.div_euclid(PLY);
 
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let mut v;
             if move_count == 1 {
                 v = if PV {
-                    -self.search::<true>(-beta, -alpha, new_depth, ply + 1, false)
+                    -self.search::<true>(-beta, -alpha, new_fdepth, ply + 1, false)
                 } else {
-                    -self.search::<false>(-alpha - 1, -alpha, new_depth, ply + 1, !cut_node)
+                    -self.search::<false>(-alpha - 1, -alpha, new_fdepth, ply + 1, !cut_node)
                 };
             } else {
                 let mut r = 0;
@@ -1246,14 +1252,15 @@ impl<'a> Worker<'a> {
                         let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > 4);
                         r += 2 * far(self.board.recent_move(0)) as i32 + far(self.board.recent_move(1)) as i32;
                     }
-                    r = r.clamp(0, new_depth - 1);
+                    r = r.min(new_depth - 1).max(0);
                 }
-                v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);
+                let r = r * PLY;
+                v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth - r, ply + 1, true);
                 if v > alpha && r > 0 {
-                    v = -self.search::<false>(-alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                    v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth, ply + 1, !cut_node);
                 }
                 if PV && v > alpha && v < beta {
-                    v = -self.search::<true>(-beta, -alpha, new_depth, ply + 1, false);
+                    v = -self.search::<true>(-beta, -alpha, new_fdepth, ply + 1, false);
                 }
             }
             self.board.undo();
@@ -1303,6 +1310,7 @@ impl<'a> Worker<'a> {
                     // ply shallower, as in Rapfi.
                     if depth > 2 && depth < 12 && v.abs() < MATE_BOUND {
                         depth -= 1;
+                        fdepth -= PLY;
                     }
                 }
             }
