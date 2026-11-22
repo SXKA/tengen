@@ -1281,13 +1281,16 @@ impl<'a> Worker<'a> {
                             for &q in &attacks[..attack_count] {
                                 self.attack_history_update(us as usize, q, -bonus);
                             }
-                        } else if !tactical {
+                        } else if !in_threat {
+                            // Blocks and defences against a four-three learn
+                            // history too, as in Rapfi; killers stay quiet
+                            // moves only.
                             let bonus = (depth * depth * 8).min(3200);
                             self.history_update(us as usize, pos, bonus);
                             for &q in &quiets[..quiet_count] {
                                 self.history_update(us as usize, q, -bonus);
                             }
-                            if self.killers[ply][0] != pos {
+                            if !tactical && self.killers[ply][0] != pos {
                                 self.killers[ply] = [pos, self.killers[ply][0]];
                             }
                         }
@@ -1301,7 +1304,7 @@ impl<'a> Worker<'a> {
                     }
                 }
             }
-            if !tactical && quiet_count < quiets.len() {
+            if !in_threat && self.board.p4(pos, us) < Pattern4::HFlex3 && quiet_count < quiets.len() {
                 quiets[quiet_count] = pos;
                 quiet_count += 1;
             }
