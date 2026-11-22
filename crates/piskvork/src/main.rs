@@ -9,7 +9,8 @@
 //! `--params name=value,...` changes search parameters (both for tuning),
 //! and `--candidates RANGE` the candidate moves, as Rapfi's
 //! `candidate_range` (`square2`, `square2_line3`, `square3`,
-//! `square3_line4` or `square4`).
+//! `square3_line4` or `square4`) or narrower (`square1_line2`,
+//! `square1_line3`).
 
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};

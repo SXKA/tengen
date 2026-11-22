@@ -51,7 +51,7 @@ on:
       tengen_candidates:
         description: Tengen's candidate range (empty for its default)
         type: choice
-        options: ["", square2, square2_line3, square3, square3_line4, square4]
+        options: ["", square1_line2, square1_line3, square2, square2_line3, square3, square3_line4, square4]
         default: ""
 
 permissions:
