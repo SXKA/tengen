@@ -25,6 +25,9 @@ on:
       tengen_turn_ms:
         description: Milliseconds per move for Tengen only (time odds; empty for the same as Rapfi)
         default: ""
+      max_depth:
+        description: Deepest iteration for both engines (empty for none); raise turn_ms so depth binds
+        default: ""
       memory_mb:
         description: Memory per engine in MiB (Gomocup 2026 allows 1024)
         default: "160"
@@ -161,6 +164,7 @@ jobs:
           [ -f "$book" ] && openings="--openings $book"
           odds=""
           [ "${{ inputs.players }}" = tengen ] && [ -n "${{ inputs.tengen_turn_ms }}" ] && odds="--new-turn-ms ${{ inputs.tengen_turn_ms }}"
+          [ -n "${{ inputs.max_depth }}" ] && odds="$odds --max-depth ${{ inputs.max_depth }}"
           target/release/tengen-arena $openings $odds \
             --new "$new" \
             --base "$base" \

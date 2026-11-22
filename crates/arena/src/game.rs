@@ -22,6 +22,9 @@ pub struct Settings {
     /// Milliseconds per move for the brain with this command, instead of
     /// `turn_ms`: time odds.
     pub turn_override: Option<(String, u64)>,
+    /// Deepest iteration for both brains (`INFO MAX_DEPTH`, which Rapfi and
+    /// Tengen read), for matches at equal depth; `None` for no limit.
+    pub max_depth: Option<u32>,
 }
 
 impl Settings {
@@ -57,6 +60,12 @@ pub fn play_game(
             options.match_ms,
             options.memory_mb,
         )
+        .map(|mut brain| {
+            if let Some(depth) = options.max_depth {
+                brain.send(&format!("INFO MAX_DEPTH {depth}"));
+            }
+            brain
+        })
     };
     let mut brains = match (spawn(black_path), spawn(white_path)) {
         (Ok(b), Ok(w)) => [b, w],

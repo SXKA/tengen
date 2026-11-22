@@ -67,6 +67,9 @@ struct Brain {
     /// Milliseconds left in the game, when the manager says.
     time_left: Option<f64>,
     max_memory: u64,
+    /// Deepest iteration (Rapfi's `INFO MAX_DEPTH`), for depth-limited
+    /// matches; `None` for no limit.
+    max_depth: Option<i32>,
     rule: Rule,
 }
 
@@ -81,6 +84,7 @@ impl Brain {
             timeout_match: 0.0,
             time_left: None,
             max_memory: 0,
+            max_depth: None,
             rule: Rule::Freestyle,
         }
     }
@@ -102,7 +106,10 @@ impl Brain {
         } else {
             100.0
         };
-        Limits::for_clock(left, turn, empty, board.ply())
+        Limits {
+            depth: self.max_depth,
+            ..Limits::for_clock(left, turn, empty, board.ply())
+        }
     }
 
     fn apply_info(&mut self, key: &str, value: &str) {
@@ -132,6 +139,7 @@ impl Brain {
                 }
             }
             ("thread_num", Some(n)) => self.engine.set_threads(n as usize),
+            ("max_depth", Some(n)) => self.max_depth = (n >= 1.0).then_some(n as i32),
             _ => {}
         }
     }
