@@ -531,7 +531,7 @@ params! {
     /// / (2 - improving)` moves.
     lmp_base = 5,
     /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`.
-    lmr_base = 100,
+    lmr_base = 120,
     /// See `lmr_base`.
     lmr_scale = 104,
     /// Late move reductions: history points per ply less.
