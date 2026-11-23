@@ -46,6 +46,8 @@ fn extreme_parameters_search() {
         "history_max=0,history_bonus=0",
         "time_falling_min=2000,time_falling_max=0",
         "fail_high_margin=0,fail_high_reduction=3",
+        "nmp_depth=1,nmp_margin_base=-1000,nmp_margin_min=-1000,nmp_reduction_base=0,nmp_reduction_scale=0",
+        "nmp_depth=0,nmp_margin_min=-5000,nmp_reduction_base=5000",
     ] {
         assert!(bench(params).contains("nodes"), "--params {params}");
     }

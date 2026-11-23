@@ -68,6 +68,11 @@ fn near_last(pos: Pos, last: Pos, square: i32, line: i32) -> bool {
 
 /// Chebyshev distance between two cells.
 #[inline]
+/// A recent move that was a stone, not a null move.
+fn stone(m: Option<Pos>) -> Option<Pos> {
+    m.filter(|&p| p != Pos::NONE)
+}
+
 fn chebyshev(a: Pos, b: Pos) -> i32 {
     (a.x() as i32 - b.x() as i32)
         .abs()
@@ -515,6 +520,22 @@ params! {
     /// Reverse futility pruning: how much less margin an improving position
     /// needs.
     rfp_improving = 29,
+    /// Null move pruning: from this depth on (99 for none).
+    nmp_depth = 99,
+    /// Null move pruning: the static evaluation must be above beta by
+    /// `max(nmp_margin_base - nmp_margin_slope * depth, nmp_margin_min)`
+    /// (Rapfi's freestyle margins in Tengen's units).
+    nmp_margin_base = 780,
+    /// See `nmp_margin_base`.
+    nmp_margin_slope = 41,
+    /// See `nmp_margin_base`.
+    nmp_margin_min = 470,
+    /// Null move pruning: the null move is searched
+    /// `(nmp_reduction_base + nmp_reduction_scale * depth) / 100` plies
+    /// shallower (Rapfi: 3.70 + 0.141 depth).
+    nmp_reduction_base = 370,
+    /// See `nmp_reduction_base`.
+    nmp_reduction_scale = 14,
     /// Razoring: deepest depth.
     razor_depth = 3,
     /// Razoring: base margin.
@@ -1255,6 +1276,24 @@ impl<'a> Worker<'a> {
                     return v;
                 }
             }
+            // Null move: far above beta even if the opponent moves twice,
+            // as in Rapfi. Gomoku has no zugzwang, and a win the opponent
+            // has by fours is found in the reduced search.
+            let p = self.p;
+            let margin = (p.nmp_margin_base - p.nmp_margin_slope * depth).max(p.nmp_margin_min);
+            if depth >= p.nmp_depth
+                && beta.abs() < MATE_BOUND
+                && static_eval >= beta + margin
+                && self.board.recent_move(0).is_some_and(|m| m != Pos::NONE)
+            {
+                let r = (p.nmp_reduction_base + p.nmp_reduction_scale * depth) / 100;
+                self.board.pass();
+                let v = -self.search::<false>(-beta, -beta + 1, depth - r, ply + 1, !cut_node);
+                self.board.undo_pass();
+                if v >= beta && !self.stopped() {
+                    return if v >= MATE_BOUND { beta } else { v };
+                }
+            }
         }
 
         // Internal iterative reduction: no move to try first, search less.
@@ -1284,7 +1323,7 @@ impl<'a> Worker<'a> {
             return 0;
         }
         let killers = self.killers[ply];
-        let counter = self.board.last_move().map_or((Pos::NONE, Pattern4::None), |last| {
+        let counter = stone(self.board.last_move()).map_or((Pos::NONE, Pattern4::None), |last| {
             self.counters[them as usize][last.index()]
         });
         for m in list.iter_mut() {
@@ -1378,14 +1417,8 @@ impl<'a> Worker<'a> {
                 && depth <= self.p.distract_depth
                 && best > -MATE_BOUND
                 && self.board.p4(pos, them) < Pattern4::EBlock4
-                && self
-                    .board
-                    .recent_move(0)
-                    .is_some_and(|m| chebyshev(pos, m) > distract_opponent)
-                && self
-                    .board
-                    .recent_move(1)
-                    .is_some_and(|m| chebyshev(pos, m) > distract_self)
+                && stone(self.board.recent_move(0)).is_some_and(|m| chebyshev(pos, m) > distract_opponent)
+                && stone(self.board.recent_move(1)).is_some_and(|m| chebyshev(pos, m) > distract_self)
             {
                 continue;
             }
@@ -1475,8 +1508,8 @@ impl<'a> Worker<'a> {
                     if useless {
                         let reach = self.p.useless_distance;
                         let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > reach);
-                        r += self.p.useless_far_opponent * far(self.board.recent_move(0)) as i32
-                            + self.p.useless_far_own * far(self.board.recent_move(1)) as i32;
+                        r += self.p.useless_far_opponent * far(stone(self.board.recent_move(0))) as i32
+                            + self.p.useless_far_own * far(stone(self.board.recent_move(1))) as i32;
                     }
                     // Down to one ply (none left if the move is already at one).
                     r = r.min(new_depth - 1).max(0);
@@ -1504,7 +1537,7 @@ impl<'a> Worker<'a> {
                     }
                     if v >= beta {
                         // Not after a four: the reply was forced.
-                        if let Some(last) = self.board.last_move()
+                        if let Some(last) = stone(self.board.last_move())
                             && self.board.p4_count(them, Pattern4::AFive) == 0
                         {
                             self.counters[them as usize][last.index()] = (pos, self.board.p4(pos, us));
@@ -1648,7 +1681,7 @@ impl<'a> Worker<'a> {
         movegen::generate_fours(&mut self.board, &mut list);
         // Rapfi's quiescent VCF only continues next to the attacker's own
         // last move: within two cells, or four along a line.
-        if let Some(last) = self.board.recent_move(1) {
+        if let Some(last) = stone(self.board.recent_move(1)) {
             let (square, line) = (self.p.qsearch_near_square, self.p.qsearch_near_line);
             list.retain(|m| near_last(m.pos, last, square, line));
         }
