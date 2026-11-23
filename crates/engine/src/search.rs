@@ -531,6 +531,17 @@ params! {
     /// Counter-four pruning: fours at least this strong (a `Pattern4` index:
     /// 10 four-plus, 11 four-three) are kept.
     threat_four_keep = 11,
+    /// ProbCut: from this depth on (99 for none), if one of our best
+    /// `probcut_moves` attacks (a three or a four) stays `probcut_margin`
+    /// above beta in a search `probcut_reduction` plies shallower, the
+    /// node fails high.
+    probcut_depth = 99,
+    /// See `probcut_depth`.
+    probcut_margin = 300,
+    /// See `probcut_depth`.
+    probcut_reduction = 4,
+    /// See `probcut_depth`.
+    probcut_moves = 3,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1304,6 +1315,32 @@ impl<'a> Worker<'a> {
                 if v >= beta && !self.stopped() {
                     return if v >= MATE_BOUND { beta } else { v };
                 }
+            }
+            // ProbCut: an attack of ours that a shallower search finds well
+            // above beta.
+            let probe_beta = beta + p.probcut_margin;
+            if depth >= p.probcut_depth && probe_beta < MATE_BOUND && beta.abs() < MATE_BOUND {
+                let mut list = std::mem::take(&mut self.lists[ply]);
+                if let Gen::Moves { forced: false } = movegen::generate(&mut self.board, &mut list) {
+                    let board = &self.board;
+                    list.retain(|m| board.p4(m.pos, us) >= Pattern4::HFlex3);
+                    list.sort_unstable_by_key(|m| std::cmp::Reverse(m.score));
+                    list.truncate(p.probcut_moves.max(0) as usize);
+                    let shallow = (depth - 1 - p.probcut_reduction).max(0);
+                    for m in list.iter() {
+                        self.board.play(m.pos);
+                        let v = -self.search::<false>(-probe_beta, -probe_beta + 1, shallow, ply + 1, !cut_node);
+                        self.board.undo();
+                        if self.stopped() {
+                            break;
+                        }
+                        if v >= probe_beta {
+                            self.lists[ply] = list;
+                            return v.min(MATE_BOUND - 1);
+                        }
+                    }
+                }
+                self.lists[ply] = list;
             }
         }
 
