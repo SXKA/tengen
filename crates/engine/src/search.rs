@@ -574,6 +574,11 @@ params! {
     history_div = 32,
     /// Late move pruning: exponent of the depth, in hundredths.
     lmp_power = 130,
+    /// Late move pruning: up to this depth (0 for none), the limit is
+    /// `lmp_shallow_less` moves lower (at least one move).
+    lmp_shallow_depth = 0,
+    /// See `lmp_shallow_depth`.
+    lmp_shallow_less = 0,
     /// Late move pruning also against an open three (1) or not (0); never
     /// against a four, which leaves one move.
     lmp_threat = 1,
@@ -1315,8 +1320,11 @@ impl<'a> Worker<'a> {
         let mut attack_count = 0;
         // Rapfi's move-count pruning: the limit grows as depth^1.3, so it
         // keeps pruning at every depth, not only near the leaves.
-        let lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32)
+        let mut lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32)
             / (2 - improving as i32);
+        if depth <= self.p.lmp_shallow_depth {
+            lmp_limit = (lmp_limit - self.p.lmp_shallow_less).max(1);
+        }
         // Fail-high reduction: a cut node whose static evaluation is far
         // above beta will most likely fail high anyway, so quiet moves are
         // searched a ply shallower.
