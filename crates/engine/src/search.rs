@@ -524,6 +524,13 @@ params! {
     /// pattern for either side is skipped once a move has been searched
     /// (0 for none).
     trivial_depth = 0,
+    /// Counter-four pruning: against an open three, up to this depth, a four
+    /// that does not block it only pushes the threat past the horizon and
+    /// is skipped once a move has been searched (0 for none).
+    threat_four_depth = 0,
+    /// Counter-four pruning: fours at least this strong (a `Pattern4` index:
+    /// 10 four-plus, 11 four-three) are kept.
+    threat_four_keep = 11,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1413,6 +1420,15 @@ impl<'a> Worker<'a> {
                     && opp_fives == 0
                     && (self.board.p4(pos, us) as i32) < self.p.lmp_threat_keep);
             if lmp_here && best > -MATE_BOUND && move_count > lmp_limit {
+                continue;
+            }
+            if in_threat
+                && opp_fives == 0
+                && depth <= self.p.threat_four_depth
+                && best > -MATE_BOUND
+                && self.board.p4(pos, them) < Pattern4::EBlock4
+                && (self.board.p4(pos, us) as i32) < self.p.threat_four_keep
+            {
                 continue;
             }
             if depth <= self.p.trivial_depth
