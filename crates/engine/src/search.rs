@@ -574,6 +574,9 @@ params! {
     history_div = 32,
     /// Late move pruning: exponent of the depth, in hundredths.
     lmp_power = 130,
+    /// Late move pruning also against an open three (1) or not (0); never
+    /// against a four, which leaves one move.
+    lmp_threat = 0,
     /// Against an open four, moves that block nothing far from both last
     /// moves are pruned up to this depth.
     distract_depth = 4,
@@ -1339,7 +1342,8 @@ impl<'a> Worker<'a> {
             // Rapfi prunes by move count at PV nodes too (not the root).
             // Fours too, as in Rapfi.
             // Against a four-three too (marked forced), as Rapfi prunes there.
-            if !in_threat && best > -MATE_BOUND && move_count > lmp_limit {
+            let lmp_here = !in_threat || (self.p.lmp_threat != 0 && opp_fives == 0);
+            if lmp_here && best > -MATE_BOUND && move_count > lmp_limit {
                 continue;
             }
             // Rapfi: against an open four, near the leaves, a move that does
