@@ -578,7 +578,8 @@ params! {
     /// Late move pruning: exponent of the depth, in hundredths.
     lmp_power = 130,
     /// Late move pruning: up to this depth (0 for none), the limit is
-    /// `lmp_shallow_less` moves lower (at least one move).
+    /// `lmp_shallow_less` moves lower (at least one move), except against
+    /// a threat.
     lmp_shallow_depth = 0,
     /// See `lmp_shallow_depth`.
     lmp_shallow_less = 0,
@@ -1325,7 +1326,8 @@ impl<'a> Worker<'a> {
         // keeps pruning at every depth, not only near the leaves.
         let mut lmp_limit = (self.p.lmp_base + (depth.max(0) as f64).powf(self.p.lmp_power as f64 / 100.0) as i32)
             / (2 - improving as i32);
-        if depth <= self.p.lmp_shallow_depth {
+        // Not against a threat, where a third block may be the only one.
+        if depth <= self.p.lmp_shallow_depth && !in_threat {
             lmp_limit = (lmp_limit - self.p.lmp_shallow_less).max(1);
         }
         // Fail-high reduction: a cut node whose static evaluation is far
