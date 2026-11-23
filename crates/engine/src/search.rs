@@ -544,6 +544,9 @@ params! {
     lmr_improving = 1,
     /// Late move reductions: plies less for our threes and forced replies.
     lmr_threat = 1,
+    /// Late move reductions also for our fours (1), as in Rapfi, or never
+    /// (0); never for the block of a five.
+    lmr_four = 0,
     /// Internal iterative reduction: plies less without a table move.
     iir_reduction = 1,
     /// Fail-high reduction: plies less for a quiet move when the static
@@ -1352,7 +1355,8 @@ impl<'a> Worker<'a> {
                 && opp_fives == 0
                 && self.board.p4(pos, them) < Pattern4::EBlock4
                 && self.board.p4(pos, us) < Pattern4::BFlex4;
-            let four = opp_fives > 0 || (self.board.p4(pos, us) >= Pattern4::EBlock4 && !useless);
+            let four =
+                opp_fives > 0 || (self.p.lmr_four == 0 && self.board.p4(pos, us) >= Pattern4::EBlock4 && !useless);
 
             // Rapfi's move-count pruning also drops late threes; only fours
             // and forced replies are kept.
