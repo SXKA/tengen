@@ -576,7 +576,7 @@ params! {
     lmp_power = 130,
     /// Late move pruning also against an open three (1) or not (0); never
     /// against a four, which leaves one move.
-    lmp_threat = 0,
+    lmp_threat = 1,
     /// Against an open four, moves that block nothing far from both last
     /// moves are pruned up to this depth.
     distract_depth = 4,
