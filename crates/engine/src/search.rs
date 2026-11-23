@@ -546,7 +546,7 @@ params! {
     lmr_threat = 1,
     /// Late move reductions also for our fours (1), as in Rapfi, or never
     /// (0); never for the block of a five.
-    lmr_four = 0,
+    lmr_four = 1,
     /// Internal iterative reduction: plies less without a table move.
     iir_reduction = 1,
     /// Fail-high reduction: plies less for a quiet move when the static
@@ -1346,8 +1346,8 @@ impl<'a> Worker<'a> {
             let pos = m.pos;
             let tactical =
                 forced || self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, them) >= Pattern4::HFlex3;
-            // Our fours are never reduced, blocks of fours are; threes are, a
-            // ply less than quiet moves (Rapfi reduces every move).
+            // Our fours are reduced too unless lmr_four is 0, as Rapfi reduces
+            // every move; threes a ply less than quiet moves.
             // Defences against an open three or a four-three are reduced
             // too, as in Rapfi; only the block of a five never is.
             // Against an open three, a move that blocks nothing (a plain
