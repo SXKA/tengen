@@ -577,6 +577,10 @@ params! {
     /// Late move pruning also against an open three (1) or not (0); never
     /// against a four, which leaves one move.
     lmp_threat = 1,
+    /// Against an open three, moves making at least this pattern of ours
+    /// (a `Pattern4` index: 11 a four-three, 10 a four with more) are never
+    /// pruned by move count; 14 prunes all.
+    lmp_threat_keep = 14,
     /// Against an open four, moves that block nothing far from both last
     /// moves are pruned up to this depth.
     distract_depth = 4,
@@ -1347,7 +1351,10 @@ impl<'a> Worker<'a> {
             // Rapfi prunes by move count at PV nodes too (not the root).
             // Fours too, as in Rapfi.
             // Against a four-three too (marked forced), as Rapfi prunes there.
-            let lmp_here = !in_threat || (self.p.lmp_threat != 0 && opp_fives == 0);
+            let lmp_here = !in_threat
+                || (self.p.lmp_threat != 0
+                    && opp_fives == 0
+                    && (self.board.p4(pos, us) as i32) < self.p.lmp_threat_keep);
             if lmp_here && best > -MATE_BOUND && move_count > lmp_limit {
                 continue;
             }
