@@ -520,6 +520,10 @@ params! {
     /// Reverse futility pruning: how much less margin an improving position
     /// needs.
     rfp_improving = 29,
+    /// Trivial-move pruning: up to this depth, as in Rapfi, a move making no
+    /// pattern for either side is skipped once a move has been searched
+    /// (0 for none).
+    trivial_depth = 0,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1409,6 +1413,13 @@ impl<'a> Worker<'a> {
                     && opp_fives == 0
                     && (self.board.p4(pos, us) as i32) < self.p.lmp_threat_keep);
             if lmp_here && best > -MATE_BOUND && move_count > lmp_limit {
+                continue;
+            }
+            if depth <= self.p.trivial_depth
+                && best > -MATE_BOUND
+                && self.board.p4(pos, us) == Pattern4::None
+                && self.board.p4(pos, them) == Pattern4::None
+            {
                 continue;
             }
             // Rapfi: against an open four, near the leaves, a move that does
