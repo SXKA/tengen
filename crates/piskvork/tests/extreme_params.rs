@@ -51,7 +51,7 @@ fn extreme_parameters_search() {
         "trivial_depth=100",
         "probcut_depth=1,probcut_margin=-1000,probcut_reduction=0,probcut_moves=100",
         "probcut_depth=0,probcut_margin=100000,probcut_reduction=100",
-        "threat_four_depth=100,threat_four_keep=100",
+        "threat_four_depth=100,threat_four_keep=100,threat_four_vcf=1",
     ] {
         assert!(bench(params).contains("nodes"), "--params {params}");
     }

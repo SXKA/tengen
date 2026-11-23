@@ -531,6 +531,9 @@ params! {
     /// Counter-four pruning: fours at least this strong (a `Pattern4` index:
     /// 10 four-plus, 11 four-three) are kept.
     threat_four_keep = 11,
+    /// Counter-four pruning: 1 to prune only when the quiescence search
+    /// finds no win by fours for us here (those fours would start it).
+    threat_four_vcf = 0,
     /// ProbCut: from this depth on (99 for none), if one of our best
     /// `probcut_moves` attacks (a three or a four) stays `probcut_margin`
     /// above beta in a search `probcut_reduction` plies shallower, the
@@ -1428,6 +1431,9 @@ impl<'a> Worker<'a> {
         let distract_opponent = self.p.distract_opponent;
         let likely_fail_high = !PV && cut_node && !in_threat && static_eval >= beta + self.p.fail_high_margin * depth;
 
+        // Whether we win by fours here: looked up the first time a counter-four
+        // might be pruned.
+        let mut our_vcf: Option<bool> = None;
         for (index, m) in list.iter().enumerate() {
             let move_count = index as i32 + 1;
             let pos = m.pos;
@@ -1465,6 +1471,8 @@ impl<'a> Worker<'a> {
                 && best > -MATE_BOUND
                 && self.board.p4(pos, them) < Pattern4::EBlock4
                 && (self.board.p4(pos, us) as i32) < self.p.threat_four_keep
+                && (self.p.threat_four_vcf == 0
+                    || !*our_vcf.get_or_insert_with(|| self.qsearch(MATE_BOUND - 1, MATE_BOUND, ply, 0) >= MATE_BOUND))
             {
                 continue;
             }
