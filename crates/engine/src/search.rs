@@ -643,6 +643,9 @@ params! {
     distract_own_renju = 5,
     /// Extensions only within this many times the root depth in plies.
     extension_plies = 2,
+    /// Facing an open three with no depth left: a ply of search (1), or
+    /// quiescence and its evaluation as in Rapfi (0).
+    threat_horizon = 1,
     /// Histories saturate at this.
     history_max = 16_384,
     /// Root late move reductions: the table's value less this.
@@ -1169,8 +1172,10 @@ impl<'a> Worker<'a> {
             return alpha;
         }
         // An open three of the opponent at the horizon: search the defences
-        // instead of standing pat in quiescence.
+        // instead of standing pat in quiescence (unless threat_horizon is 0:
+        // Rapfi leaves the open three to the evaluation).
         let depth = if depth <= 0
+            && self.p.threat_horizon != 0
             && opp_fives == 0
             && board.p4_count(them, Pattern4::BFlex4) > 0
             && ply < self.extension_limit()
