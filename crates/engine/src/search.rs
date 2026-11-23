@@ -649,7 +649,7 @@ params! {
     extension_plies = 2,
     /// Facing an open three with no depth left: a ply of search (1), or
     /// quiescence and its evaluation as in Rapfi (0).
-    threat_horizon = 1,
+    threat_horizon = 0,
     /// Histories saturate at this.
     history_max = 16_384,
     /// Root late move reductions: the table's value less this.
