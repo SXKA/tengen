@@ -529,7 +529,7 @@ params! {
     /// Trivial-move pruning: up to this depth, as in Rapfi, a move making no
     /// pattern for either side is skipped once a move has been searched
     /// (0 for none).
-    trivial_depth = 0,
+    trivial_depth = 2,
     /// Counter-four pruning: against an open three, up to this depth, a four
     /// that does not block it only pushes the threat past the horizon and
     /// is skipped once a move has been searched (0 for none).
