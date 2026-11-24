@@ -22,6 +22,9 @@ use crate::pattern::Pattern4;
 use crate::rule::Rule;
 use crate::tt::{Bound, TranspositionTable, TtEntry};
 
+/// One ply of search depth, in the hundredths `Worker::search` counts.
+const PLY: i32 = 100;
+
 /// Score of a win on the next ply.
 pub const MATE: Value = 30_000;
 /// Scores at or beyond this are wins or losses.
@@ -487,6 +490,22 @@ fn reductions() -> &'static [[u8; 64]; 64] {
     })
 }
 
+/// The late move reduction table in hundredths of a ply, unrounded.
+fn reductions_frac() -> &'static [[i32; 64]; 64] {
+    static TABLE: OnceLock<[[i32; 64]; 64]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let p = params();
+        let (base, scale) = (p.lmr_base as f64, p.lmr_scale as f64);
+        let mut t = [[0; 64]; 64];
+        for (d, row) in t.iter_mut().enumerate().skip(1) {
+            for (m, r) in row.iter_mut().enumerate().skip(1) {
+                *r = (base + scale * (d as f64).ln() * (m as f64).ln()).max(0.0) as i32;
+            }
+        }
+        t
+    })
+}
+
 /// Defines [`Params`]: each field with its documentation and default.
 macro_rules! params {
     ($($(#[$doc:meta])* $name:ident = $default:expr,)*) => {
@@ -551,6 +570,25 @@ params! {
     /// Static wins in five plies (a four-three or a double open three the
     /// opponent cannot interrupt), as in Rapfi: 1 to detect them.
     quick_win = 1,
+    /// Fractional depth: 1 for late move reductions in hundredths of a ply,
+    /// unrounded, so that fractions add up along a line as in Rapfi.
+    lmr_frac = 0,
+    /// Fractional depth: hundredths taken off a fractional reduction
+    /// (50 keeps the mean of rounding down).
+    lmr_frac_bias = 0,
+    /// Fractional depth: the extension of a single reply, in hundredths
+    /// (Rapfi 110).
+    ext_single = 100,
+    /// Fractional depth: hundredths the table move is extended at a PV node
+    /// when not tested for singularity (Rapfi 16).
+    ext_tt_pv = 0,
+    /// Fractional depth: the same off the PV (Rapfi 8).
+    ext_tt = 0,
+    /// Fractional depth: hundredths more if that move is a four within 4
+    /// cells of our last move (Rapfi 27).
+    ext_near_four = 0,
+    /// Fractional depth: the same within 6 cells (Rapfi 5).
+    ext_near_four_far = 0,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1126,7 +1164,7 @@ impl<'a> Worker<'a> {
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let v = if i == 0 {
-                -self.search::<true>(-beta, -alpha, depth - 1, 1, false)
+                -self.search::<true>(-beta, -alpha, (depth - 1) * PLY, 1, false)
             } else {
                 let r = if depth >= self.p.root_lmr_depth && i >= self.p.root_lmr_moves.max(0) as usize && !tactical {
                     (reductions()[depth.min(63) as usize][i.min(63)] as i32 - self.p.root_lmr_less)
@@ -1135,12 +1173,12 @@ impl<'a> Worker<'a> {
                 } else {
                     0
                 };
-                let mut v = -self.search::<false>(-alpha - 1, -alpha, depth - 1 - r, 1, true);
+                let mut v = -self.search::<false>(-alpha - 1, -alpha, (depth - 1 - r) * PLY, 1, true);
                 if v > alpha && r > 0 && !self.stopped() {
-                    v = -self.search::<false>(-alpha - 1, -alpha, depth - 1, 1, false);
+                    v = -self.search::<false>(-alpha - 1, -alpha, (depth - 1) * PLY, 1, false);
                 }
                 if v > alpha && !self.stopped() {
-                    v = -self.search::<true>(-beta, -alpha, depth - 1, 1, false);
+                    v = -self.search::<true>(-beta, -alpha, (depth - 1) * PLY, 1, false);
                 }
                 v
             };
@@ -1198,11 +1236,14 @@ impl<'a> Worker<'a> {
         *h += bonus - *h * bonus.abs() / max;
     }
 
+    /// `fdepth` is the depth left in hundredths of a ply, so that reductions
+    /// and extensions can be fractional as in Rapfi; decisions within the
+    /// node use whole plies (rounded down, at least one).
     fn search<const PV: bool>(
         &mut self,
         mut alpha: Value,
         mut beta: Value,
-        depth: i32,
+        fdepth: i32,
         ply: usize,
         cut_node: bool,
     ) -> Value {
@@ -1242,19 +1283,20 @@ impl<'a> Worker<'a> {
         // An open three of the opponent at the horizon: search the defences
         // instead of standing pat in quiescence (unless threat_horizon is 0:
         // Rapfi leaves the open three to the evaluation).
-        let depth = if depth <= 0
+        let fdepth = if fdepth <= 0
             && self.p.threat_horizon != 0
             && opp_fives == 0
             && board.p4_count(them, Pattern4::BFlex4) > 0
             && ply < self.extension_limit()
         {
-            1
+            PLY
         } else {
-            depth
+            fdepth
         };
-        if depth <= 0 {
+        if fdepth <= 0 {
             return self.qsearch(alpha, beta, ply, 0);
         }
+        let depth = (fdepth / PLY).max(1);
 
         let key = board.hash();
         let excluded = self.excluded[ply];
@@ -1327,7 +1369,7 @@ impl<'a> Worker<'a> {
             {
                 let r = (p.nmp_reduction_base + p.nmp_reduction_scale * depth) / 100;
                 self.board.pass();
-                let v = -self.search::<false>(-beta, -beta + 1, depth - r, ply + 1, !cut_node);
+                let v = -self.search::<false>(-beta, -beta + 1, fdepth - r * PLY, ply + 1, !cut_node);
                 self.board.undo_pass();
                 if v >= beta && !self.stopped() {
                     return if v >= MATE_BOUND { beta } else { v };
@@ -1346,7 +1388,7 @@ impl<'a> Worker<'a> {
                     let shallow = (depth - 1 - p.probcut_reduction).max(0);
                     for m in list.iter() {
                         self.board.play(m.pos);
-                        let v = -self.search::<false>(-probe_beta, -probe_beta + 1, shallow, ply + 1, !cut_node);
+                        let v = -self.search::<false>(-probe_beta, -probe_beta + 1, shallow * PLY, ply + 1, !cut_node);
                         self.board.undo();
                         if self.stopped() {
                             break;
@@ -1362,11 +1404,13 @@ impl<'a> Worker<'a> {
         }
 
         // Internal iterative reduction: no move to try first, search less.
-        let mut depth = if (PV || cut_node) && depth >= self.p.iir_depth && tt_move.is_none() {
+        let iir_depth = if (PV || cut_node) && depth >= self.p.iir_depth && tt_move.is_none() {
             (depth - self.p.iir_reduction).max(1)
         } else {
             depth
         };
+        let mut fdepth = fdepth - (depth - iir_depth) * PLY;
+        let mut depth = iir_depth;
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         let kind = movegen::generate(&mut self.board, &mut list);
@@ -1518,6 +1562,7 @@ impl<'a> Worker<'a> {
             }
 
             let mut extension = (single_reply && ply < self.extension_limit()) as i32;
+            let mut singular_tried = false;
             // Rapfi's singular extension: if every other move fails low
             // against a margin below the table value, the table move is the
             // only good one and is extended (two plies when far below, off
@@ -1533,12 +1578,13 @@ impl<'a> Worker<'a> {
                 && e.bound != Bound::Upper
                 && e.value.abs() < MATE_BOUND
             {
+                singular_tried = true;
                 let former_pv = (!PV && tt_pv) as i32;
                 let tt_value = value_from_tt(e.value, ply);
                 let singular_beta = tt_value - depth * (self.p.se_margin + self.p.se_former_pv * former_pv) / 100;
                 let singular_depth = depth - (depth * self.p.se_reduction / 100 - former_pv);
                 self.excluded[ply] = pos;
-                let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth, ply, cut_node);
+                let v = self.search::<false>(singular_beta - 1, singular_beta, singular_depth * PLY, ply, cut_node);
                 self.excluded[ply] = Pos::NONE;
                 if self.stopped() {
                     self.lists[ply] = list;
@@ -1565,21 +1611,44 @@ impl<'a> Worker<'a> {
             }
             let fail_high_reduction =
                 (likely_fail_high && self.board.p4(pos, us) < Pattern4::EBlock4) as i32 * self.p.fail_high_reduction;
-            let new_depth = depth - 1 + extension - fail_high_reduction;
+            // Fractional extensions, as in Rapfi: a single reply, and the
+            // table move when it was not tested for singularity (more if it
+            // is a four near our last move).
+            let mut extension = extension * PLY;
+            if single_reply && extension == PLY {
+                extension = self.p.ext_single;
+            } else if extension == 0 && !singular_tried && Some(pos) == tt_move && ply < self.extension_limit() {
+                extension = if PV { self.p.ext_tt_pv } else { self.p.ext_tt };
+                if self.board.p4(pos, us) >= Pattern4::EBlock4
+                    && let Some(last) = stone(self.board.recent_move(1))
+                {
+                    let distance = chebyshev(pos, last);
+                    if distance <= 4 {
+                        extension += self.p.ext_near_four;
+                    } else if distance <= 6 {
+                        extension += self.p.ext_near_four_far;
+                    }
+                }
+                // At most a ply, as a singular extension.
+                extension = extension.min(PLY);
+            }
+            let new_fdepth = fdepth - PLY + extension - fail_high_reduction * PLY;
 
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let mut v;
             if move_count == 1 {
                 v = if PV {
-                    -self.search::<true>(-beta, -alpha, new_depth, ply + 1, false)
+                    -self.search::<true>(-beta, -alpha, new_fdepth, ply + 1, false)
                 } else {
-                    -self.search::<false>(-alpha - 1, -alpha, new_depth, ply + 1, !cut_node)
+                    -self.search::<false>(-alpha - 1, -alpha, new_fdepth, ply + 1, !cut_node)
                 };
             } else {
                 let mut r = 0;
                 if depth >= self.p.lmr_depth && !four {
-                    r = reductions()[depth.min(63) as usize][(move_count as usize).min(63)] as i32;
+                    let (d, m) = (depth.min(63) as usize, (move_count as usize).min(63));
+                    let table = reductions()[d][m] as i32;
+                    r = table;
                     r += cut_node as i32 * self.p.lmr_cut_node;
                     r -= tt_pv as i32 * self.p.lmr_tt_pv + improving as i32 * self.p.lmr_improving;
                     r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
@@ -1592,15 +1661,22 @@ impl<'a> Worker<'a> {
                         r += self.p.useless_far_opponent * far(stone(self.board.recent_move(0))) as i32
                             + self.p.useless_far_own * far(stone(self.board.recent_move(1))) as i32;
                     }
+                    // In hundredths: the table unrounded when lmr_frac is on,
+                    // the adjustments whole plies.
+                    r = if self.p.lmr_frac != 0 {
+                        reductions_frac()[d][m] - self.p.lmr_frac_bias + (r - table) * PLY
+                    } else {
+                        r * PLY
+                    };
                     // Down to one ply (none left if the move is already at one).
-                    r = r.min(new_depth - 1).max(0);
+                    r = r.min(new_fdepth - PLY).max(0);
                 }
-                v = -self.search::<false>(-alpha - 1, -alpha, new_depth - r, ply + 1, true);
+                v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth - r, ply + 1, true);
                 if v > alpha && r > 0 {
-                    v = -self.search::<false>(-alpha - 1, -alpha, new_depth, ply + 1, !cut_node);
+                    v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth, ply + 1, !cut_node);
                 }
                 if PV && v > alpha && v < beta {
-                    v = -self.search::<true>(-beta, -alpha, new_depth, ply + 1, false);
+                    v = -self.search::<true>(-beta, -alpha, new_fdepth, ply + 1, false);
                 }
             }
             self.board.undo();
@@ -1650,6 +1726,7 @@ impl<'a> Worker<'a> {
                     // ply shallower, as in Rapfi.
                     if depth > self.p.alpha_reduce_min && depth < self.p.alpha_reduce_max && v.abs() < MATE_BOUND {
                         depth -= 1;
+                        fdepth -= PLY;
                     }
                 }
             }
