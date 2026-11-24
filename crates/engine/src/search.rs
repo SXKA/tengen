@@ -513,13 +513,19 @@ macro_rules! params {
 }
 
 params! {
-    /// Reverse futility pruning: deepest depth.
-    rfp_depth = 7,
+    /// Reverse futility pruning: deepest depth (99 for any).
+    rfp_depth = 99,
     /// Reverse futility pruning: margin per ply.
-    rfp_margin = 59,
+    rfp_margin = 116,
     /// Reverse futility pruning: how much less margin an improving position
     /// needs.
-    rfp_improving = 29,
+    rfp_improving = 116,
+    /// Reverse futility pruning: the margin counts this many plies fewer
+    /// (Rapfi: 1, no margin at depth 1).
+    rfp_offset = 1,
+    /// Reverse futility pruning: margin per ply taken off at a cut node with
+    /// no table entry (Rapfi: 27 in Tengen's units).
+    rfp_no_tt = 27,
     /// Trivial-move pruning: up to this depth, as in Rapfi, a move making no
     /// pattern for either side is skipped once a move has been searched
     /// (0 for none).
@@ -544,7 +550,7 @@ params! {
     probcut_moves = 3,
     /// Static wins in five plies (a four-three or a double open three the
     /// opponent cannot interrupt), as in Rapfi: 1 to detect them.
-    quick_win = 0,
+    quick_win = 1,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -567,6 +573,9 @@ params! {
     razor_base = 154,
     /// Razoring: margin per ply.
     razor_margin = 113,
+    /// Razoring: 1 to razor only when the quiescence search confirms the
+    /// node fails low, 0 to return its value either way (Rapfi).
+    razor_verify = 1,
     /// Futility pruning of quiet moves: deepest depth.
     futility_depth = 3,
     /// Futility pruning of quiet moves: base margin.
@@ -1294,14 +1303,15 @@ impl<'a> Worker<'a> {
         if !PV && !in_threat && excluded == Pos::NONE && static_eval.abs() < MATE_BOUND {
             // Reverse futility: far above beta with shallow depth left.
             let p = &self.p;
-            if depth <= p.rfp_depth && static_eval - (p.rfp_margin * depth - p.rfp_improving * improving as i32) >= beta
-            {
+            let per_ply = p.rfp_margin - p.rfp_no_tt * (cut_node && tte.is_none()) as i32;
+            let margin = (per_ply * (depth - p.rfp_offset) - p.rfp_improving * improving as i32).max(0);
+            if depth <= p.rfp_depth && static_eval - margin >= beta {
                 return static_eval;
             }
             // Razoring: far below alpha, and no forcing win changes that.
             if depth <= p.razor_depth && static_eval + p.razor_base + p.razor_margin * depth <= alpha {
                 let v = self.qsearch(alpha, alpha + 1, ply, 0);
-                if v <= alpha {
+                if v <= alpha || self.p.razor_verify == 0 {
                     return v;
                 }
             }
