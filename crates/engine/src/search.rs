@@ -1617,7 +1617,7 @@ impl<'a> Worker<'a> {
             let mut extension = extension * PLY;
             if single_reply && extension == PLY {
                 extension = self.p.ext_single;
-            } else if extension == 0 && !singular_tried && Some(pos) == tt_move {
+            } else if extension == 0 && !singular_tried && Some(pos) == tt_move && ply < self.extension_limit() {
                 extension = if PV { self.p.ext_tt_pv } else { self.p.ext_tt };
                 if self.board.p4(pos, us) >= Pattern4::EBlock4
                     && let Some(last) = stone(self.board.recent_move(1))
@@ -1629,6 +1629,8 @@ impl<'a> Worker<'a> {
                         extension += self.p.ext_near_four_far;
                     }
                 }
+                // At most a ply, as a singular extension.
+                extension = extension.min(PLY);
             }
             let new_fdepth = fdepth - PLY + extension - fail_high_reduction * PLY;
 
