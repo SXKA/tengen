@@ -50,6 +50,8 @@ fn extreme_parameters_search() {
         "nmp_depth=0,nmp_margin_min=-5000,nmp_reduction_base=5000",
         "trivial_depth=100",
         "quick_win=1",
+        "lmr_frac=1,lmr_frac_bias=-1000,ext_single=300,ext_tt_pv=300,ext_tt=300,ext_near_four=300",
+        "lmr_frac=1,lmr_frac_bias=1000,ext_single=-300,ext_tt=-300",
         "rfp_depth=100,rfp_margin=0,rfp_offset=-100,rfp_no_tt=1000,razor_depth=100,razor_verify=0",
         "probcut_depth=1,probcut_margin=-1000,probcut_reduction=0,probcut_moves=100",
         "probcut_depth=0,probcut_margin=100000,probcut_reduction=100",
