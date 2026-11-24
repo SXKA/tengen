@@ -68,6 +68,23 @@ fn near_last(pos: Pos, last: Pos, square: i32, line: i32) -> bool {
 
 /// Chebyshev distance between two cells.
 #[inline]
+/// Rapfi's static wins in five plies: a four-three, or a double open three,
+/// that the opponent has no four to interrupt. Black's in Renju are left to
+/// the search, where a follow-up four may be forbidden.
+fn wins_in_five(board: &Board, us: Color, them: Color) -> bool {
+    if board.rule() == Rule::Renju && us == Color::Black {
+        return false;
+    }
+    let block_fours = board.p4_count(them, Pattern4::CBlock4Flex3)
+        + board.p4_count(them, Pattern4::DBlock4Plus)
+        + board.p4_count(them, Pattern4::EBlock4);
+    if block_fours > 0 || board.p4_count(them, Pattern4::AFive) > 0 {
+        return false;
+    }
+    board.p4_count(us, Pattern4::CBlock4Flex3) > 0
+        || (board.p4_count(us, Pattern4::FFlex3x2) > 0 && board.p4_count(them, Pattern4::BFlex4) == 0)
+}
+
 /// A recent move that was a stone, not a null move.
 fn stone(m: Option<Pos>) -> Option<Pos> {
     m.filter(|&p| p != Pos::NONE)
@@ -542,6 +559,9 @@ params! {
     probcut_reduction = 4,
     /// See `probcut_depth`.
     probcut_moves = 3,
+    /// Static wins in five plies (a four-three or a double open three the
+    /// opponent cannot interrupt), as in Rapfi: 1 to detect them.
+    quick_win = 0,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1275,6 +1295,9 @@ impl<'a> Worker<'a> {
         {
             return mate_in(ply + 3);
         }
+        if self.p.quick_win != 0 && opp_fives == 0 && wins_in_five(board, us, them) {
+            return mate_in(ply + 5);
+        }
 
         let static_eval = if in_threat {
             -INFINITE
@@ -1718,6 +1741,9 @@ impl<'a> Worker<'a> {
         }
         if board.p4_count(us, Pattern4::BFlex4) > 0 && board.p4_count_at_least(them, Pattern4::EBlock4) == 0 {
             return mate_in(ply + 3);
+        }
+        if self.p.quick_win != 0 && wins_in_five(board, us, them) {
+            return mate_in(ply + 5);
         }
         if qply >= self.p.qsearch_plies.max(0) as usize {
             return stand;
