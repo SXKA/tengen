@@ -513,19 +513,19 @@ macro_rules! params {
 }
 
 params! {
-    /// Reverse futility pruning: deepest depth.
-    rfp_depth = 7,
+    /// Reverse futility pruning: deepest depth (99 for any).
+    rfp_depth = 99,
     /// Reverse futility pruning: margin per ply.
-    rfp_margin = 59,
+    rfp_margin = 116,
     /// Reverse futility pruning: how much less margin an improving position
     /// needs.
-    rfp_improving = 29,
+    rfp_improving = 116,
     /// Reverse futility pruning: the margin counts this many plies fewer
     /// (Rapfi: 1, no margin at depth 1).
-    rfp_offset = 0,
+    rfp_offset = 1,
     /// Reverse futility pruning: margin per ply taken off at a cut node with
     /// no table entry (Rapfi: 27 in Tengen's units).
-    rfp_no_tt = 0,
+    rfp_no_tt = 27,
     /// Trivial-move pruning: up to this depth, as in Rapfi, a move making no
     /// pattern for either side is skipped once a move has been searched
     /// (0 for none).
@@ -550,7 +550,7 @@ params! {
     probcut_moves = 3,
     /// Static wins in five plies (a four-three or a double open three the
     /// opponent cannot interrupt), as in Rapfi: 1 to detect them.
-    quick_win = 0,
+    quick_win = 1,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by

@@ -3,9 +3,11 @@
 # noticeable in play but not drastic. r_end is the final learning rate.
 # Pruning: reverse futility, razoring, futility, move-count pruning,
 # fail-high reduction and distraction pruning. Starts are the defaults.
-rfp_depth            7     3     12     1     0.002
-rfp_margin          59    10    200     8     0.002
-rfp_improving       29     0    100     5     0.002
+rfp_depth           99     3     99     1     0.002
+rfp_margin         116    10    300     8     0.002
+rfp_improving      116     0    300     8     0.002
+rfp_offset           1     0      3     1     0.002
+rfp_no_tt           27     0    100     5     0.002
 razor_depth          3     1      6     0.7   0.002
 razor_base         154     0    400    15     0.002
 razor_margin       113     0    300    12     0.002
