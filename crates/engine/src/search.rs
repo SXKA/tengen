@@ -68,23 +68,6 @@ fn near_last(pos: Pos, last: Pos, square: i32, line: i32) -> bool {
 
 /// Chebyshev distance between two cells.
 #[inline]
-/// Rapfi's static wins in five plies: a four-three, or a double open three,
-/// that the opponent has no four to interrupt. Black's in Renju are left to
-/// the search, where a follow-up four may be forbidden.
-fn wins_in_five(board: &Board, us: Color, them: Color) -> bool {
-    if board.rule() == Rule::Renju && us == Color::Black {
-        return false;
-    }
-    let block_fours = board.p4_count(them, Pattern4::CBlock4Flex3)
-        + board.p4_count(them, Pattern4::DBlock4Plus)
-        + board.p4_count(them, Pattern4::EBlock4);
-    if block_fours > 0 || board.p4_count(them, Pattern4::AFive) > 0 {
-        return false;
-    }
-    board.p4_count(us, Pattern4::CBlock4Flex3) > 0
-        || (board.p4_count(us, Pattern4::FFlex3x2) > 0 && board.p4_count(them, Pattern4::BFlex4) == 0)
-}
-
 /// A recent move that was a stone, not a null move.
 fn stone(m: Option<Pos>) -> Option<Pos> {
     m.filter(|&p| p != Pos::NONE)
@@ -1295,9 +1278,10 @@ impl<'a> Worker<'a> {
         {
             return mate_in(ply + 3);
         }
-        if self.p.quick_win != 0 && opp_fives == 0 && wins_in_five(board, us, them) {
+        if self.p.quick_win != 0 && opp_fives == 0 && self.wins_in_five(us, them) {
             return mate_in(ply + 5);
         }
+        let board = &self.board;
 
         let static_eval = if in_threat {
             -INFINITE
@@ -1696,6 +1680,52 @@ impl<'a> Worker<'a> {
 
     /// Threat-space quiescence. The side to move blocks the opponent's four
     /// if there is one; otherwise it may stand pat or play a four of its own.
+    /// Rapfi's static wins in five plies, for a side with no five against
+    /// it: a double open three when the opponent has no four or open-four
+    /// point to interrupt it, or a four-three whose forced block makes no
+    /// four. Black's in Renju are left to the search, where a follow-up four
+    /// may be forbidden.
+    fn wins_in_five(&mut self, us: Color, them: Color) -> bool {
+        let board = &self.board;
+        if board.rule() == Rule::Renju && us == Color::Black {
+            return false;
+        }
+        let block_fours = board.p4_count(them, Pattern4::CBlock4Flex3)
+            + board.p4_count(them, Pattern4::DBlock4Plus)
+            + board.p4_count(them, Pattern4::EBlock4);
+        if board.p4_count(us, Pattern4::FFlex3x2) > 0 && block_fours == 0 && board.p4_count(them, Pattern4::BFlex4) == 0
+        {
+            return true;
+        }
+        let four_threes = board.p4_count(us, Pattern4::CBlock4Flex3) as usize;
+        if four_threes == 0 {
+            return false;
+        }
+        if block_fours == 0 {
+            return true;
+        }
+        let mut cells = [Pos::NONE; 8];
+        let mut n = 0;
+        for pos in board.candidates() {
+            if board.p4(pos, us) == Pattern4::CBlock4Flex3 {
+                cells[n] = pos;
+                n += 1;
+                if n == four_threes.min(cells.len()) {
+                    break;
+                }
+            }
+        }
+        cells[..n].iter().any(|&pos| {
+            self.board.play(pos);
+            let wins = self
+                .board
+                .five_point(us)
+                .is_some_and(|block| self.board.p4(block, them) < Pattern4::EBlock4);
+            self.board.undo();
+            wins
+        })
+    }
+
     fn qsearch(&mut self, mut alpha: Value, beta: Value, ply: usize, qply: usize) -> Value {
         self.nodes += 1;
         if self.nodes.is_multiple_of(NODE_CHECK) {
@@ -1742,9 +1772,10 @@ impl<'a> Worker<'a> {
         if board.p4_count(us, Pattern4::BFlex4) > 0 && board.p4_count_at_least(them, Pattern4::EBlock4) == 0 {
             return mate_in(ply + 3);
         }
-        if self.p.quick_win != 0 && wins_in_five(board, us, them) {
+        if self.p.quick_win != 0 && self.wins_in_five(us, them) {
             return mate_in(ply + 5);
         }
+        let board = &self.board;
         if qply >= self.p.qsearch_plies.max(0) as usize {
             return stand;
         }
