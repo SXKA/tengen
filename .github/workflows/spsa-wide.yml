@@ -1,0 +1,131 @@
+name: SPSA (parallel)
+
+# Tune the parameters of a spec file (tuning/spsa*.txt) with several
+# independent SPSA chains in parallel, one per runner, and average what
+# they end at. A single runner plays too few games at longer time controls,
+# where selectivity is best tuned; averaging N chains cuts the noise of
+# each by about the square root of N. Start it from the Actions tab.
+# The averaged values are in the run summary; check them with an SPRT
+# before adopting them as the defaults in search.rs.
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: Parameters to tune (tuning/spsa*.txt)
+        default: tuning/spsa-selectivity.txt
+      chains:
+        description: Independent chains (runners)
+        default: "8"
+      pairs:
+        description: Game pairs per chain (the schedule assumes all are played)
+        default: "2400"
+      minutes:
+        description: Stop each chain after this many minutes even if pairs remain
+        default: "320"
+      turn_ms:
+        description: Milliseconds per move
+        default: "300"
+      rule:
+        description: Game rule
+        type: choice
+        options: [freestyle, standard, renju, caro, freestyle-caro]
+        default: freestyle
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.97.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build
+        run: |
+          cargo build --release -p tengen-piskvork -p tengen-arena
+          mkdir dist
+          cp target/release/pbrain-tengen target/release/tengen-spsa dist/
+          cp "${{ inputs.spec }}" dist/spec.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: dist
+
+  chains:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - id: list
+        run: echo "list=[$(seq -s, 1 ${{ inputs.chains }})]" >> "$GITHUB_OUTPUT"
+
+  tune:
+    needs: [build, chains]
+    strategy:
+      fail-fast: false
+      matrix:
+        chain: ${{ fromJSON(needs.chains.outputs.list) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: binaries
+          path: dist
+      - name: Tune
+        run: |
+          chmod +x dist/pbrain-tengen dist/tengen-spsa
+          dist/tengen-spsa \
+            --brain dist/pbrain-tengen \
+            --spec dist/spec.txt \
+            --pairs ${{ inputs.pairs }} \
+            --minutes ${{ inputs.minutes }} \
+            --turn-ms ${{ inputs.turn_ms }} \
+            --rule ${{ inputs.rule }} \
+            --concurrency "$(nproc)" \
+            --seed "${{ github.run_id }}${{ matrix.chain }}" | tee result.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: result-${{ matrix.chain }}
+          path: result.md
+
+  average:
+    needs: tune
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: result-*
+          path: results
+      - name: Average the chains
+        run: |
+          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, re, statistics
+
+          starts, tuned, pairs = {}, {}, 0
+          for path in sorted(glob.glob("results/*/result.md")):
+              text = open(path).read()
+              m = re.search(r"^(\d+) game pairs", text, re.M)
+              pairs += int(m.group(1)) if m else 0
+              for name, start, value in re.findall(r"^\| (\w+) \| (-?[\d.]+) \| (-?[\d.]+) \|$", text, re.M):
+                  starts[name] = start
+                  tuned.setdefault(name, []).append(float(value))
+          chains = max((len(v) for v in tuned.values()), default=0)
+          print("## SPSA (parallel)\n")
+          print(f"{chains} chains, {pairs} game pairs in all.\n")
+          print("| parameter | start | mean | sd | min | max |")
+          print("|---|---|---|---|---|---|")
+          for name, values in tuned.items():
+              sd = statistics.stdev(values) if len(values) > 1 else 0.0
+              print(f"| {name} | {starts[name]} | {statistics.mean(values):.1f} | {sd:.1f} | {min(values):.1f} | {max(values):.1f} |")
+          params = ",".join(f"{n}={round(statistics.mean(v))}" for n, v in tuned.items())
+          print(f"\n```\n--params {params}\n```")
+          EOF
