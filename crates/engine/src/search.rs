@@ -535,16 +535,16 @@ params! {
     /// Reverse futility pruning: deepest depth (99 for any).
     rfp_depth = 99,
     /// Reverse futility pruning: margin per ply.
-    rfp_margin = 116,
+    rfp_margin = 118,
     /// Reverse futility pruning: how much less margin an improving position
     /// needs.
-    rfp_improving = 116,
+    rfp_improving = 123,
     /// Reverse futility pruning: the margin counts this many plies fewer
     /// (Rapfi: 1, no margin at depth 1).
     rfp_offset = 1,
     /// Reverse futility pruning: margin per ply taken off at a cut node with
     /// no table entry (Rapfi: 27 in Tengen's units).
-    rfp_no_tt = 27,
+    rfp_no_tt = 31,
     /// Trivial-move pruning: up to this depth, as in Rapfi, a move making no
     /// pattern for either side is skipped once a move has been searched
     /// (0 for none).
@@ -608,27 +608,27 @@ params! {
     /// Razoring: deepest depth.
     razor_depth = 3,
     /// Razoring: base margin.
-    razor_base = 154,
+    razor_base = 164,
     /// Razoring: margin per ply.
-    razor_margin = 113,
+    razor_margin = 107,
     /// Razoring: 1 to razor only when the quiescence search confirms the
     /// node fails low, 0 to return its value either way (Rapfi).
     razor_verify = 1,
     /// Futility pruning of quiet moves: deepest depth.
     futility_depth = 3,
     /// Futility pruning of quiet moves: base margin.
-    futility_base = 117,
+    futility_base = 118,
     /// Futility pruning of quiet moves: margin per ply.
-    futility_margin = 104,
+    futility_margin = 114,
     /// Late move pruning starts after `(lmp_base + depth^(lmp_power / 100))
     /// / (2 - improving)` moves.
     lmp_base = 5,
     /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`.
-    lmr_base = 120,
+    lmr_base = 127,
     /// See `lmr_base`.
-    lmr_scale = 104,
+    lmr_scale = 102,
     /// Late move reductions: history points per ply less.
-    lmr_history = 5873,
+    lmr_history = 5627,
     /// Late move reductions: plies more at cut nodes.
     lmr_cut_node = 1,
     /// Late move reductions: plies less at nodes that were on the PV.
@@ -647,7 +647,7 @@ params! {
     fail_high_reduction = 1,
     /// Fail-high reduction: static evaluation above beta by this much per
     /// ply.
-    fail_high_margin = 18,
+    fail_high_margin = 19,
     /// First aspiration window half-width.
     aspiration = 19,
     /// Aspiration windows from this depth on.
@@ -669,7 +669,7 @@ params! {
     /// Move ordering: quiet history divided by this.
     history_div = 32,
     /// Late move pruning: exponent of the depth, in hundredths.
-    lmp_power = 130,
+    lmp_power = 138,
     /// Late move pruning: up to this depth (0 for none), the limit is
     /// `lmp_shallow_less` moves lower (at least one move), except against
     /// a threat.
@@ -687,7 +687,7 @@ params! {
     /// moves are pruned up to this depth.
     distract_depth = 4,
     /// Futility pruning: a move's ordering score counts up to this much.
-    futility_score_cap = 400,
+    futility_score_cap = 422,
     /// Futility pruning: a move's ordering score divided by this.
     futility_score_div = 4,
     /// Singular extension: from this depth on.
@@ -696,13 +696,13 @@ params! {
     se_tt_depth = 2,
     /// Singular extension: margin below the table value, hundredths per
     /// ply.
-    se_margin = 85,
+    se_margin = 88,
     /// Singular extension: more margin, hundredths per ply, at nodes that
     /// were on the PV.
     se_former_pv = 100,
     /// Singular extension: the exclusion search reduced by this many
     /// hundredths of the depth.
-    se_reduction = 55,
+    se_reduction = 58,
     /// Double extension: margin below the singular beta, less
     /// `min(depth * se_double_scale / 100, se_double_cap)`.
     se_double_base = 29,

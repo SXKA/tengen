@@ -3,20 +3,22 @@
 # spsa-wide.yml: the margins of reverse futility, razoring and futility,
 # move-count pruning, fail-high reduction, late move reductions and the
 # singular extension. Depth thresholds are left out (whole plies tune
-# poorly). Starts are the defaults.
-rfp_margin         116    10    300     8     0.002
-rfp_improving      116     0    300     8     0.002
-rfp_no_tt           27     0    100     5     0.002
-razor_base         154     0    400    15     0.002
-razor_margin       113     0    300    12     0.002
-futility_base      117     0    400    15     0.002
-futility_margin    104    30    300    10     0.002
-futility_score_cap 400   100   1200    50     0.002
-lmp_base             5     0     12     1     0.002
-lmp_power          130    80    200     8     0.002
-fail_high_margin    18     0     80     4     0.002
-lmr_base           120     0    200     8     0.002
-lmr_scale          104    50    160     6     0.002
-lmr_history       5873  2000  20000   600     0.002
-se_margin           85    20    250    10     0.002
-se_reduction        55    30     80     4     0.002
+# poorly). Starts are the defaults. The learning rate is ten times
+# Fishtest's: a chain plays only about 2400 pairs, and at 0.002 the
+# first run moved nothing by more than two units.
+rfp_margin         118    10    300     8     0.02
+rfp_improving      123     0    300     8     0.02
+rfp_no_tt           31     0    100     5     0.02
+razor_base         164     0    400    15     0.02
+razor_margin       107     0    300    12     0.02
+futility_base      118     0    400    15     0.02
+futility_margin    114    30    300    10     0.02
+futility_score_cap 422   100   1200    50     0.02
+lmp_base             5     0     12     1     0.02
+lmp_power          138    80    200     8     0.02
+fail_high_margin    19     0     80     4     0.02
+lmr_base           127     0    200     8     0.02
+lmr_scale          102    50    160     6     0.02
+lmr_history       5627  2000  20000   600     0.02
+se_margin           88    20    250    10     0.02
+se_reduction        58    30     80     4     0.02

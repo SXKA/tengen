@@ -4,20 +4,20 @@
 # Pruning: reverse futility, razoring, futility, move-count pruning,
 # fail-high reduction and distraction pruning. Starts are the defaults.
 rfp_depth           99     3     99     1     0.002
-rfp_margin         116    10    300     8     0.002
-rfp_improving      116     0    300     8     0.002
+rfp_margin         118    10    300     8     0.002
+rfp_improving      123     0    300     8     0.002
 rfp_offset           1     0      3     1     0.002
-rfp_no_tt           27     0    100     5     0.002
+rfp_no_tt           31     0    100     5     0.002
 trivial_depth        2     0      6     1     0.002
 razor_depth          3     1      6     0.7   0.002
-razor_base         154     0    400    15     0.002
-razor_margin       113     0    300    12     0.002
+razor_base         164     0    400    15     0.002
+razor_margin       107     0    300    12     0.002
 futility_depth       3     1      6     0.7   0.002
-futility_base      117     0    400    15     0.002
-futility_margin    104    30    300    10     0.002
-futility_score_cap 400   100   1200    50     0.002
+futility_base      118     0    400    15     0.002
+futility_margin    114    30    300    10     0.002
+futility_score_cap 422   100   1200    50     0.002
 futility_score_div   4     1     12     0.7   0.002
 lmp_base             5     0     12     1     0.002
-lmp_power          130    80    200     8     0.002
-fail_high_margin    18     0     80     4     0.002
+lmp_power          138    80    200     8     0.002
+fail_high_margin    19     0     80     4     0.002
 distract_depth       4     0      8     0.7   0.002
