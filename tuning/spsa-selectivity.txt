@@ -1,0 +1,22 @@
+# Search parameters for tengen-spsa: name start min max c_end r_end.
+# Selectivity as a whole, for tuning at a longer time control with
+# spsa-wide.yml: the margins of reverse futility, razoring and futility,
+# move-count pruning, fail-high reduction, late move reductions and the
+# singular extension. Depth thresholds are left out (whole plies tune
+# poorly). Starts are the defaults.
+rfp_margin         116    10    300     8     0.002
+rfp_improving      116     0    300     8     0.002
+rfp_no_tt           27     0    100     5     0.002
+razor_base         154     0    400    15     0.002
+razor_margin       113     0    300    12     0.002
+futility_base      117     0    400    15     0.002
+futility_margin    104    30    300    10     0.002
+futility_score_cap 400   100   1200    50     0.002
+lmp_base             5     0     12     1     0.002
+lmp_power          130    80    200     8     0.002
+fail_high_margin    18     0     80     4     0.002
+lmr_base           120     0    200     8     0.002
+lmr_scale          104    50    160     6     0.002
+lmr_history       5873  2000  20000   600     0.002
+se_margin           85    20    250    10     0.002
+se_reduction        55    30     80     4     0.002
