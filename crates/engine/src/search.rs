@@ -666,13 +666,13 @@ params! {
     /// Internal iterative reduction: from this depth on.
     iir_depth = 4,
     /// Move ordering: bonus of a killer move.
-    killer_bonus = 300,
+    killer_bonus = 0,
     /// Move ordering: bonus of the counter move.
-    counter_bonus = 150,
+    counter_bonus = 40,
     /// Move ordering: attack history divided by this.
-    attack_history_div = 16,
+    attack_history_div = 128,
     /// Move ordering: quiet history divided by this.
-    history_div = 32,
+    history_div = 256,
     /// Late move pruning: exponent of the depth, in hundredths.
     lmp_power = 138,
     /// Late move pruning: up to this depth (0 for none), the limit is
