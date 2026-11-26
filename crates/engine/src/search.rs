@@ -589,6 +589,11 @@ params! {
     ext_near_four = 0,
     /// Fractional depth: the same within 6 cells (Rapfi 5).
     ext_near_four_far = 0,
+    /// 1 to prune on the table value instead of the static evaluation when
+    /// its bound says the position is better (or worse) than evaluated, as
+    /// Rapfi does: reverse futility, razoring, null move and ProbCut then
+    /// act on a search-backed estimate.
+    tt_eval = 0,
     /// Null move pruning: from this depth on (99 for none).
     nmp_depth = 99,
     /// Null move pruning: the static evaluation must be above beta by
@@ -1342,6 +1347,21 @@ impl<'a> Worker<'a> {
         self.evals[ply] = static_eval;
         let improving = !in_threat && ply >= 2 && static_eval > self.evals[ply - 2];
 
+        // Rapfi's better estimate: the table value when its bound says the
+        // position is at least (or at most) that.
+        let static_eval = match tte {
+            Some(e) if self.p.tt_eval != 0 && !in_threat && excluded == Pos::NONE => {
+                let v = value_from_tt(e.value, ply);
+                let fits = match e.bound {
+                    Bound::Exact => true,
+                    Bound::Lower => v > static_eval,
+                    Bound::Upper => v < static_eval,
+                    Bound::None => false,
+                };
+                if fits && v.abs() < MATE_BOUND { v } else { static_eval }
+            }
+            _ => static_eval,
+        };
         if !PV && !in_threat && excluded == Pos::NONE && static_eval.abs() < MATE_BOUND {
             // Reverse futility: far above beta with shallow depth left.
             let p = &self.p;
