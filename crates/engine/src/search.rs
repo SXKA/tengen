@@ -593,17 +593,17 @@ params! {
     /// After a reduced search beats alpha, the re-search is a ply deeper if
     /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
     /// reduction (0: never; Rapfi: 37 and 17).
-    lmr_deeper = 0,
+    lmr_deeper = 37,
     /// See `lmr_deeper`.
     lmr_deeper_slope = 17,
     /// Another ply deeper above `lmr_deeper` plus this plus
     /// `lmr_deeper2_slope` per ply of reduction (0: never; Rapfi: 546, 46).
-    lmr_deeper2 = 0,
+    lmr_deeper2 = 546,
     /// See `lmr_deeper2`.
     lmr_deeper2_slope = 46,
     /// The re-search is a ply shallower if the reduced search beat the best
     /// value by less than this per ply of depth (0: never; Rapfi: 2).
-    lmr_shallower = 0,
+    lmr_shallower = 2,
     /// Fractional depth: the extension of a single reply, in hundredths
     /// (Rapfi 110).
     ext_single = 100,
@@ -768,7 +768,7 @@ params! {
     history_attack_malus = 1,
     /// 1 to teach history at a TT cutoff: a bonus to a quiet TT move that
     /// fails high, a malus to one that fails low (Rapfi's updateTTMoveStats).
-    tt_move_history = 0,
+    tt_move_history = 1,
     /// Once alpha is raised, the rest a ply shallower above this depth.
     alpha_reduce_min = 2,
     /// See `alpha_reduce_min`: below this depth.
