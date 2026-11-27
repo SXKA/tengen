@@ -730,6 +730,14 @@ params! {
     history_bonus = 8,
     /// History bonus: at most this.
     history_bonus_max = 3200,
+    /// History bonus: plus this times depth (Rapfi's form is
+    /// 29 d^2 + 99 d - 164 of 10692, which is 44, 152 and -251 of 16384).
+    history_bonus_lin = 0,
+    /// History bonus: plus this.
+    history_bonus_const = 0,
+    /// 1 to take history from every searched attack that did not cut off,
+    /// whatever the best move, as Rapfi does (0: only when an attack cuts).
+    history_attack_malus = 0,
     /// Once alpha is raised, the rest a ply shallower above this depth.
     alpha_reduce_min = 2,
     /// See `alpha_reduce_min`: below this depth.
@@ -1720,8 +1728,12 @@ impl<'a> Worker<'a> {
                             self.counters[them as usize][last.index()] = (pos, self.board.p4(pos, us));
                         }
                         let attack = self.board.p4(pos, us) >= Pattern4::HFlex3;
+                        let p = &self.p;
+                        let bonus =
+                            (depth * depth * p.history_bonus + depth * p.history_bonus_lin + p.history_bonus_const)
+                                .min(p.history_bonus_max)
+                                .max(-p.history_max);
                         if attack {
-                            let bonus = (depth * depth * self.p.history_bonus).min(self.p.history_bonus_max);
                             self.attack_history_update(us as usize, pos, bonus);
                             for &q in &attacks[..attack_count] {
                                 self.attack_history_update(us as usize, q, -bonus);
@@ -1730,10 +1742,14 @@ impl<'a> Worker<'a> {
                             // Blocks and defences against a four-three learn
                             // history too, as in Rapfi; killers stay quiet
                             // moves only.
-                            let bonus = (depth * depth * self.p.history_bonus).min(self.p.history_bonus_max);
                             self.history_update(us as usize, pos, bonus);
                             for &q in &quiets[..quiet_count] {
                                 self.history_update(us as usize, q, -bonus);
+                            }
+                            if self.p.history_attack_malus != 0 {
+                                for &q in &attacks[..attack_count] {
+                                    self.attack_history_update(us as usize, q, -bonus);
+                                }
                             }
                             if !tactical && self.killers[ply][0] != pos {
                                 self.killers[ply] = [pos, self.killers[ply][0]];
