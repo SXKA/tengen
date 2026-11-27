@@ -682,6 +682,9 @@ params! {
     /// Fail-high reduction: plies less for a quiet move when the static
     /// evaluation is far above beta at a cut node.
     fail_high_reduction = 1,
+    /// Hundredths of a ply more for a four at a node likely to fail high
+    /// right after our own four, as Rapfi does (0: never; Rapfi: 100).
+    fh_four_ext = 0,
     /// Fail-high reduction: static evaluation above beta by this much per
     /// ply.
     fail_high_margin = 19,
@@ -1722,6 +1725,15 @@ impl<'a> Worker<'a> {
                 }
                 // At most a ply, as a singular extension.
                 extension = extension.min(PLY);
+            }
+            if self.p.fh_four_ext != 0
+                && likely_fail_high
+                && ply >= 2
+                && ply < self.extension_limit()
+                && self.move_p4[ply - 2] >= Pattern4::EBlock4
+                && self.board.p4(pos, us) >= Pattern4::EBlock4
+            {
+                extension += self.p.fh_four_ext.clamp(-PLY, PLY);
             }
             let new_fdepth = fdepth - PLY + extension - fail_high_reduction * PLY;
 
