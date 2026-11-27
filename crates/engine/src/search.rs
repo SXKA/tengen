@@ -593,7 +593,7 @@ params! {
     /// Late move reductions: plies less for a continued attack, a three or
     /// four (or a two-two within four cells of our last move) right after
     /// our own three or four (Rapfi: 0.41).
-    lmr_continuous = 0,
+    lmr_continuous = 1,
     /// After a reduced search beats alpha, the re-search is a ply deeper if
     /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
     /// reduction (0: never; Rapfi: 37 and 17).
@@ -673,7 +673,7 @@ params! {
     /// Late move reductions: plies less when the position improves.
     lmr_improving = 1,
     /// Late move reductions: plies less for our threes and forced replies.
-    lmr_threat = 1,
+    lmr_threat = 0,
     /// Late move reductions also for our fours (1), as in Rapfi, or never
     /// (0); never for the block of a five.
     lmr_four = 1,
