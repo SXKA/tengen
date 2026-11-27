@@ -727,17 +727,17 @@ params! {
     /// Useless defences: plies more when far from our own last move.
     useless_far_own = 1,
     /// History bonus: this times depth squared.
-    history_bonus = 8,
+    history_bonus = 44,
     /// History bonus: at most this.
-    history_bonus_max = 3200,
+    history_bonus_max = 13660,
     /// History bonus: plus this times depth (Rapfi's form is
     /// 29 d^2 + 99 d - 164 of 10692, which is 44, 152 and -251 of 16384).
-    history_bonus_lin = 0,
+    history_bonus_lin = 152,
     /// History bonus: plus this.
-    history_bonus_const = 0,
+    history_bonus_const = -251,
     /// 1 to take history from every searched attack that did not cut off,
     /// whatever the best move, as Rapfi does (0: only when an attack cuts).
-    history_attack_malus = 0,
+    history_attack_malus = 1,
     /// Once alpha is raised, the rest a ply shallower above this depth.
     alpha_reduce_min = 2,
     /// See `alpha_reduce_min`: below this depth.
