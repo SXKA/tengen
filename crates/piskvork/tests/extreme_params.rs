@@ -57,6 +57,8 @@ fn extreme_parameters_search() {
         "probcut_depth=1,probcut_margin=-1000,probcut_reduction=0,probcut_moves=100",
         "probcut_depth=0,probcut_margin=100000,probcut_reduction=100",
         "threat_four_depth=100,threat_four_keep=100",
+        "history_bonus=1000,history_bonus_lin=-1000,history_bonus_const=-100000,history_max=1,history_attack_malus=1,tt_move_history=1",
+        "history_bonus=0,history_bonus_lin=100000,history_bonus_const=100000,history_bonus_max=100000,tt_move_history=1",
     ] {
         assert!(bench(params).contains("nodes"), "--params {params}");
     }
