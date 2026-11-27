@@ -5,8 +5,10 @@ killer_bonus           0     0   1200    30     0.002
 counter_bonus         40     0    800    20     0.002
 attack_history_div  128    16    512    16     0.002
 history_div         256    32   1024    32     0.002
-history_bonus          8     2     24     1     0.002
-history_bonus_max   3200  1000  10000   300     0.002
+history_bonus         44    10    120     4     0.002
+history_bonus_lin    152     0    500    20     0.002
+history_bonus_const -251  -800    200    40     0.002
+history_bonus_max  13660  4000  16384   800     0.002
 history_max        16384  4000  32000  1500     0.002
 aspiration            19     5     80     3     0.002
 aspiration_depth       4     2      8     0.7   0.002
