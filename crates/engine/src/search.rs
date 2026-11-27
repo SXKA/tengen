@@ -589,7 +589,7 @@ params! {
     /// late move be searched deeper, as in Rapfi: -100).
     lmr_min = 0,
     /// 1 to leave killers out of the cut-node reduction, as Rapfi does.
-    lmr_killer_cut = 0,
+    lmr_killer_cut = 1,
     /// After a reduced search beats alpha, the re-search is a ply deeper if
     /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
     /// reduction (0: never; Rapfi: 37 and 17).
