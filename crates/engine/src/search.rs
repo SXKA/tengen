@@ -738,6 +738,9 @@ params! {
     /// 1 to take history from every searched attack that did not cut off,
     /// whatever the best move, as Rapfi does (0: only when an attack cuts).
     history_attack_malus = 1,
+    /// 1 to teach history at a TT cutoff: a bonus to a quiet TT move that
+    /// fails high, a malus to one that fails low (Rapfi's updateTTMoveStats).
+    tt_move_history = 0,
     /// Once alpha is raised, the rest a ply shallower above this depth.
     alpha_reduce_min = 2,
     /// See `alpha_reduce_min`: below this depth.
@@ -1237,6 +1240,14 @@ impl<'a> Worker<'a> {
         self.p.extension_plies.max(0) as usize * self.root_depth.max(0) as usize
     }
 
+    /// History bonus at depth `depth`.
+    fn history_bonus(&self, depth: i32) -> i32 {
+        let p = &self.p;
+        (depth * depth * p.history_bonus + depth * p.history_bonus_lin + p.history_bonus_const)
+            .min(p.history_bonus_max)
+            .max(-p.history_max)
+    }
+
     fn history_update(&mut self, color: usize, pos: Pos, bonus: i32) {
         let max = self.p.history_max.max(1);
         let h = &mut self.history[color][pos.index()];
@@ -1331,6 +1342,15 @@ impl<'a> Worker<'a> {
                 Bound::None => false,
             };
             if fits {
+                if self.p.tt_move_history != 0
+                    && let Some(m) = tt_move
+                    && opp_fives == 0
+                    && board.p4_count(them, Pattern4::BFlex4) == 0
+                    && board.p4(m, us) < Pattern4::HFlex3
+                {
+                    let bonus = self.history_bonus(depth);
+                    self.history_update(us as usize, m, if v >= beta { bonus } else { -bonus });
+                }
                 return v;
             }
         }
@@ -1728,11 +1748,7 @@ impl<'a> Worker<'a> {
                             self.counters[them as usize][last.index()] = (pos, self.board.p4(pos, us));
                         }
                         let attack = self.board.p4(pos, us) >= Pattern4::HFlex3;
-                        let p = &self.p;
-                        let bonus =
-                            (depth * depth * p.history_bonus + depth * p.history_bonus_lin + p.history_bonus_const)
-                                .min(p.history_bonus_max)
-                                .max(-p.history_max);
+                        let bonus = self.history_bonus(depth);
                         if attack {
                             self.attack_history_update(us as usize, pos, bonus);
                             for &q in &attacks[..attack_count] {
