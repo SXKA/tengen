@@ -693,6 +693,12 @@ params! {
     root_lmr_moves = 3,
     /// Internal iterative reduction: from this depth on.
     iir_depth = 4,
+    /// At a PV node with a TT move, hundredths of a ply less per ply the
+    /// TT entry is shallower than the node (0: never; Rapfi: 19 for
+    /// freestyle, "~32 elo").
+    iir_tt_pv = 0,
+    /// At most this many hundredths (Rapfi: 360).
+    iir_tt_pv_max = 360,
     /// Move ordering: bonus of a killer move.
     killer_bonus = 0,
     /// Move ordering: bonus of the counter move.
@@ -1487,6 +1493,18 @@ impl<'a> Worker<'a> {
         };
         let mut fdepth = fdepth - (depth - iir_depth) * PLY;
         let mut depth = iir_depth;
+        // Rapfi's reduction for a PV TT move that has not been chosen for a
+        // few iterations.
+        if PV
+            && self.p.iir_tt_pv != 0
+            && depth > 1
+            && tt_move.is_some()
+            && let Some(e) = tte
+        {
+            let r = ((depth - e.depth) * self.p.iir_tt_pv).clamp(0, self.p.iir_tt_pv_max.max(0));
+            fdepth = (fdepth - r).max(PLY);
+            depth = fdepth / PLY;
+        }
 
         let mut list = std::mem::take(&mut self.lists[ply]);
         let kind = movegen::generate(&mut self.board, &mut list);
