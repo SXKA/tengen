@@ -7,7 +7,8 @@ lmr_history         5627  2000  20000   600     0.02
 lmr_cut_node           1     0      3     0.5   0.02
 lmr_tt_pv              1     0      3     0.5   0.02
 lmr_improving          1     0      3     0.5   0.02
-lmr_threat             1     0      3     0.5   0.02
+lmr_threat             0     0      3     0.5   0.02
+lmr_continuous         1     0      3     0.5   0.02
 lmr_deeper            37     5    150     6     0.02
 lmr_deeper_slope      17     0     60     4     0.02
 lmr_deeper2          546   100   1500    60     0.02

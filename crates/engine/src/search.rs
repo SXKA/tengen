@@ -590,6 +590,10 @@ params! {
     lmr_min = 0,
     /// 1 to leave killers out of the cut-node reduction, as Rapfi does.
     lmr_killer_cut = 1,
+    /// Late move reductions: plies less for a continued attack, a three or
+    /// four (or a two-two within four cells of our last move) right after
+    /// our own three or four (Rapfi: 0.41).
+    lmr_continuous = 1,
     /// After a reduced search beats alpha, the re-search is a ply deeper if
     /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
     /// reduction (0: never; Rapfi: 37 and 17).
@@ -669,7 +673,7 @@ params! {
     /// Late move reductions: plies less when the position improves.
     lmr_improving = 1,
     /// Late move reductions: plies less for our threes and forced replies.
-    lmr_threat = 1,
+    lmr_threat = 0,
     /// Late move reductions also for our fours (1), as in Rapfi, or never
     /// (0); never for the block of a five.
     lmr_four = 1,
@@ -754,6 +758,11 @@ params! {
     useless_far_opponent = 2,
     /// Useless defences: plies more when far from our own last move.
     useless_far_own = 1,
+    /// 1 to measure the useless-defence distances from the right moves: the
+    /// reduction is computed after the move is played, so 0 measures the
+    /// opponent's from the move itself (never far) and our own from the
+    /// opponent's last move.
+    useless_fix = 0,
     /// History bonus: this times depth squared.
     history_bonus = 44,
     /// History bonus: at most this.
@@ -941,6 +950,8 @@ struct Worker<'a> {
     best_changes: u32,
     /// The mover's combination at each quiescence move.
     q_p4: Vec<Pattern4>,
+    /// The mover's combination at each move of the main search.
+    move_p4: Vec<Pattern4>,
     /// Move left out at each ply by a singular-extension search.
     excluded: Vec<Pos>,
     /// Double extensions taken on the path to each ply.
@@ -970,6 +981,7 @@ impl<'a> Worker<'a> {
             killers: vec![[Pos::NONE; 2]; plies],
             best_changes: 0,
             q_p4: vec![Pattern4::None; plies],
+            move_p4: vec![Pattern4::None; plies],
             excluded: vec![Pos::NONE; plies],
             double_ext: vec![0; plies],
             p: *params(),
@@ -1205,6 +1217,7 @@ impl<'a> Worker<'a> {
             let tactical =
                 self.board.p4(pos, us) >= Pattern4::HFlex3 || self.board.p4(pos, us.opponent()) >= Pattern4::HFlex3;
             self.nodes += 1;
+            self.move_p4[0] = self.board.p4(pos, us);
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let v = if i == 0 {
@@ -1444,6 +1457,7 @@ impl<'a> Worker<'a> {
                 && self.board.recent_move(0).is_some_and(|m| m != Pos::NONE)
             {
                 let r = (p.nmp_reduction_base + p.nmp_reduction_scale * depth) / 100;
+                self.move_p4[ply] = Pattern4::None;
                 self.board.pass();
                 let v = -self.search::<false>(-beta, -beta + 1, fdepth - r * PLY, ply + 1, !cut_node);
                 self.board.undo_pass();
@@ -1463,6 +1477,7 @@ impl<'a> Worker<'a> {
                     list.truncate(p.probcut_moves.max(0) as usize);
                     let shallow = (depth - 1 - p.probcut_reduction).max(0);
                     for m in list.iter() {
+                        self.move_p4[ply] = self.board.p4(m.pos, us);
                         self.board.play(m.pos);
                         let v = -self.search::<false>(-probe_beta, -probe_beta + 1, shallow * PLY, ply + 1, !cut_node);
                         self.board.undo();
@@ -1710,6 +1725,7 @@ impl<'a> Worker<'a> {
             }
             let new_fdepth = fdepth - PLY + extension - fail_high_reduction * PLY;
 
+            self.move_p4[ply] = self.board.p4(pos, us);
             self.shared.tt.prefetch(self.board.hash_after(pos));
             self.board.play(pos);
             let mut v;
@@ -1738,11 +1754,20 @@ impl<'a> Worker<'a> {
                     // Our threes are reduced a ply less; blocks of the
                     // opponent's threes as much as quiet moves.
                     r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32 * self.p.lmr_threat;
+                    if self.p.lmr_continuous != 0 && !in_threat && ply >= 2 && self.move_p4[ply - 2] >= Pattern4::HFlex3
+                    {
+                        let p4 = self.move_p4[ply];
+                        let near = stone(self.board.recent_move(2)).is_some_and(|m| chebyshev(pos, m) <= 4);
+                        if p4 >= Pattern4::HFlex3 || near && p4 >= Pattern4::JFlex2x2 {
+                            r -= self.p.lmr_continuous;
+                        }
+                    }
                     if useless {
                         let reach = self.p.useless_distance;
                         let far = |m: Option<Pos>| m.is_none_or(|m| chebyshev(pos, m) > reach);
-                        r += self.p.useless_far_opponent * far(stone(self.board.recent_move(0))) as i32
-                            + self.p.useless_far_own * far(stone(self.board.recent_move(1))) as i32;
+                        let back = self.p.useless_fix.clamp(0, 1) as usize;
+                        r += self.p.useless_far_opponent * far(stone(self.board.recent_move(back))) as i32
+                            + self.p.useless_far_own * far(stone(self.board.recent_move(back + 1))) as i32;
                     }
                     // In hundredths: the table unrounded when lmr_frac is on,
                     // the adjustments whole plies.
