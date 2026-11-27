@@ -59,6 +59,8 @@ fn extreme_parameters_search() {
         "threat_four_depth=100,threat_four_keep=100",
         "history_bonus=1000,history_bonus_lin=-1000,history_bonus_const=-100000,history_max=1,history_attack_malus=1,tt_move_history=1",
         "history_bonus=0,history_bonus_lin=100000,history_bonus_const=100000,history_bonus_max=100000,tt_move_history=1",
+        "lmr_depth=1,lmr_min=-1000,lmr_killer_cut=1,lmr_deeper=-1000,lmr_deeper_slope=0,lmr_deeper2=-1000,lmr_deeper2_slope=0,lmr_history=1,lmr_attack_weight=100000,lmr_stat_bias=-100000",
+        "lmr_depth=1,lmr_shallower=100000,lmr_quiet_weight=-100000,lmr_stat_bias=100000,lmr_history=1",
     ] {
         assert!(bench(params).contains("nodes"), "--params {params}");
     }

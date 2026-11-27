@@ -576,6 +576,34 @@ params! {
     /// Fractional depth: hundredths taken off a fractional reduction
     /// (50 keeps the mean of rounding down).
     lmr_frac_bias = 0,
+    /// Late move reductions: the weight of quiet history in the history
+    /// term, of 1024 (Rapfi's statScore: 778).
+    lmr_quiet_weight = 1024,
+    /// Late move reductions: the weight of attack history, of 1024 (Rapfi:
+    /// 1024).
+    lmr_attack_weight = 0,
+    /// Late move reductions: taken off the history term (Rapfi: 3323 of
+    /// its range, 5092 of Tengen's).
+    lmr_stat_bias = 0,
+    /// Late move reductions: at least this many hundredths (below 0 lets a
+    /// late move be searched deeper, as in Rapfi: -100).
+    lmr_min = 0,
+    /// 1 to leave killers out of the cut-node reduction, as Rapfi does.
+    lmr_killer_cut = 0,
+    /// After a reduced search beats alpha, the re-search is a ply deeper if
+    /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
+    /// reduction (0: never; Rapfi: 37 and 17).
+    lmr_deeper = 0,
+    /// See `lmr_deeper`.
+    lmr_deeper_slope = 17,
+    /// Another ply deeper above `lmr_deeper` plus this plus
+    /// `lmr_deeper2_slope` per ply of reduction (0: never; Rapfi: 546, 46).
+    lmr_deeper2 = 0,
+    /// See `lmr_deeper2`.
+    lmr_deeper2_slope = 46,
+    /// The re-search is a ply shallower if the reduced search beat the best
+    /// value by less than this per ply of depth (0: never; Rapfi: 2).
+    lmr_shallower = 0,
     /// Fractional depth: the extension of a single reply, in hundredths
     /// (Rapfi 110).
     ext_single = 100,
@@ -1697,9 +1725,16 @@ impl<'a> Worker<'a> {
                     let (d, m) = (depth.min(63) as usize, (move_count as usize).min(63));
                     let table = reductions()[d][m] as i32;
                     r = table;
-                    r += cut_node as i32 * self.p.lmr_cut_node;
+                    let killer = self.p.lmr_killer_cut != 0
+                        && !in_threat
+                        && self.killers[ply].contains(&pos)
+                        && self.board.p4(pos, us) < Pattern4::HFlex3;
+                    r += (cut_node && !killer) as i32 * self.p.lmr_cut_node;
                     r -= tt_pv as i32 * self.p.lmr_tt_pv + improving as i32 * self.p.lmr_improving;
-                    r -= self.history[us as usize][pos.index()] / self.p.lmr_history.max(1);
+                    let stat = self.history[us as usize][pos.index()] * self.p.lmr_quiet_weight / 1024
+                        + self.attack_history[us as usize][pos.index()] * self.p.lmr_attack_weight / 1024
+                        - self.p.lmr_stat_bias;
+                    r -= stat / self.p.lmr_history.max(1);
                     // Our threes are reduced a ply less; blocks of the
                     // opponent's threes as much as quiet moves.
                     r -= (forced || self.board.p4(pos, us) >= Pattern4::HFlex3) as i32 * self.p.lmr_threat;
@@ -1717,11 +1752,30 @@ impl<'a> Worker<'a> {
                         r * PLY
                     };
                     // Down to one ply (none left if the move is already at one).
-                    r = r.min(new_fdepth - PLY).max(0);
+                    r = r.min(new_fdepth - PLY).max(self.p.lmr_min.clamp(-PLY, 0));
                 }
                 v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth - r, ply + 1, true);
                 if v > alpha && r > 0 {
-                    v = -self.search::<false>(-alpha - 1, -alpha, new_fdepth, ply + 1, !cut_node);
+                    // Rapfi's (and Stockfish's) deeper and shallower
+                    // re-searches.
+                    let p = &self.p;
+                    let mut full = new_fdepth;
+                    if p.lmr_deeper != 0 && ply < self.extension_limit() {
+                        let deeper = p.lmr_deeper + p.lmr_deeper_slope * r / PLY;
+                        if v > alpha + deeper {
+                            full += PLY;
+                            if p.lmr_deeper2 != 0 && v > alpha + deeper + p.lmr_deeper2 + p.lmr_deeper2_slope * r / PLY
+                            {
+                                full += PLY;
+                            }
+                        }
+                    }
+                    if v < best + p.lmr_shallower * new_fdepth / PLY {
+                        full -= PLY;
+                    }
+                    if full > new_fdepth - r {
+                        v = -self.search::<false>(-alpha - 1, -alpha, full, ply + 1, !cut_node);
+                    }
                 }
                 if PV && v > alpha && v < beta {
                     v = -self.search::<true>(-beta, -alpha, new_fdepth, ply + 1, false);
