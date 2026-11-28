@@ -597,14 +597,14 @@ params! {
     /// After a reduced search beats alpha, the re-search is a ply deeper if
     /// it beat alpha by more than this plus `lmr_deeper_slope` per ply of
     /// reduction (0: never; Rapfi: 37 and 17).
-    lmr_deeper = 37,
+    lmr_deeper = 38,
     /// See `lmr_deeper`.
-    lmr_deeper_slope = 17,
+    lmr_deeper_slope = 13,
     /// Another ply deeper above `lmr_deeper` plus this plus
     /// `lmr_deeper2_slope` per ply of reduction (0: never; Rapfi: 546, 46).
-    lmr_deeper2 = 546,
+    lmr_deeper2 = 564,
     /// See `lmr_deeper2`.
-    lmr_deeper2_slope = 46,
+    lmr_deeper2_slope = 45,
     /// The re-search is a ply shallower if the reduced search beat the best
     /// value by less than this per ply of depth (0: never; Rapfi: 2).
     lmr_shallower = 2,
@@ -661,17 +661,17 @@ params! {
     /// / (2 - improving)` moves.
     lmp_base = 5,
     /// Late move reductions: `(lmr_base + lmr_scale * ln d * ln m) / 100`.
-    lmr_base = 127,
+    lmr_base = 130,
     /// See `lmr_base`.
-    lmr_scale = 102,
+    lmr_scale = 104,
     /// Late move reductions: history points per ply less.
-    lmr_history = 5627,
+    lmr_history = 5494,
     /// Late move reductions: plies more at cut nodes.
     lmr_cut_node = 1,
     /// Late move reductions: plies less at nodes that were on the PV.
     lmr_tt_pv = 1,
     /// Late move reductions: plies less when the position improves.
-    lmr_improving = 1,
+    lmr_improving = 0,
     /// Late move reductions: plies less for our threes and forced replies.
     lmr_threat = 0,
     /// Late move reductions also for our fours (1), as in Rapfi, or never

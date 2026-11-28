@@ -19,9 +19,9 @@ futility_score_cap 422   100   1200    50     0.02
 lmp_base             5     0     12     1     0.02
 lmp_power          138    80    200     8     0.02
 fail_high_margin    19     0     80     4     0.02
-lmr_base           127     0    200     8     0.02
-lmr_scale          102    50    160     6     0.02
-lmr_history       5627  2000  20000   600     0.02
+lmr_base           130     0    200     8     0.02
+lmr_scale          104    50    160     6     0.02
+lmr_history       5494  2000  20000   600     0.02
 se_margin           88    20    250    10     0.02
 se_reduction        58    30     80     4     0.02
 lmr_frac             1     1      1     0.01  0.02

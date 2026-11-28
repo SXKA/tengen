@@ -1,16 +1,16 @@
 # Search parameters for tengen-spsa: name start min max c_end r_end.
 # Late move reductions: the table, its adjustments, and the deeper and
 # shallower re-searches. Starts are the defaults.
-lmr_base             127     0    200     8     0.02
-lmr_scale            102    50    160     6     0.02
-lmr_history         5627  2000  20000   600     0.02
+lmr_base             130     0    200     8     0.02
+lmr_scale            104    50    160     6     0.02
+lmr_history         5494  2000  20000   600     0.02
 lmr_cut_node           1     0      3     0.5   0.02
 lmr_tt_pv              1     0      3     0.5   0.02
-lmr_improving          1     0      3     0.5   0.02
+lmr_improving          0     0      3     0.5   0.02
 lmr_threat             0     0      3     0.5   0.02
 lmr_continuous         1     0      3     0.5   0.02
-lmr_deeper            37     5    150     6     0.02
-lmr_deeper_slope      17     0     60     4     0.02
-lmr_deeper2          546   100   1500    60     0.02
-lmr_deeper2_slope     46     0    150     8     0.02
+lmr_deeper            38     5    150     6     0.02
+lmr_deeper_slope      13     0     60     4     0.02
+lmr_deeper2          564   100   1500    60     0.02
+lmr_deeper2_slope     45     0    150     8     0.02
 lmr_shallower          2     0     12     0.7   0.02
