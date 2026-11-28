@@ -686,7 +686,7 @@ params! {
     /// ply.
     fail_high_margin = 19,
     /// First aspiration window half-width.
-    aspiration = 19,
+    aspiration = 18,
     /// Aspiration windows from this depth on.
     aspiration_depth = 4,
     /// A full window once the aspiration half-width exceeds this.
@@ -698,13 +698,13 @@ params! {
     /// Internal iterative reduction: from this depth on.
     iir_depth = 4,
     /// Move ordering: bonus of a killer move.
-    killer_bonus = 0,
+    killer_bonus = 13,
     /// Move ordering: bonus of the counter move.
-    counter_bonus = 40,
+    counter_bonus = 54,
     /// Move ordering: attack history divided by this.
-    attack_history_div = 128,
+    attack_history_div = 115,
     /// Move ordering: quiet history divided by this.
-    history_div = 256,
+    history_div = 272,
     /// Late move pruning: exponent of the depth, in hundredths.
     lmp_power = 138,
     /// Late move pruning: up to this depth (0 for none), the limit is
@@ -764,14 +764,14 @@ params! {
     /// opponent's last move.
     useless_fix = 0,
     /// History bonus: this times depth squared.
-    history_bonus = 44,
+    history_bonus = 45,
     /// History bonus: at most this.
-    history_bonus_max = 13660,
+    history_bonus_max = 13959,
     /// History bonus: plus this times depth (Rapfi's form is
     /// 29 d^2 + 99 d - 164 of 10692, which is 44, 152 and -251 of 16384).
-    history_bonus_lin = 152,
+    history_bonus_lin = 155,
     /// History bonus: plus this.
-    history_bonus_const = -251,
+    history_bonus_const = -213,
     /// 1 to take history from every searched attack that did not cut off,
     /// whatever the best move, as Rapfi does (0: only when an attack cuts).
     history_attack_malus = 1,
@@ -806,7 +806,7 @@ params! {
     /// quiescence and its evaluation as in Rapfi (0).
     threat_horizon = 0,
     /// Histories saturate at this.
-    history_max = 16_384,
+    history_max = 16899,
     /// Root late move reductions: the table's value less this.
     root_lmr_less = 1,
     /// Transposition table: an entry is kept against a non-exact one this
